@@ -35,7 +35,10 @@ const sessOf = id => SESSIONS.filter(s => s.item === id);
 const sessById = id => SESSIONS.find(s => s.id === id);
 const parents = () => CARDS.filter(c => kidsOf(c.id).length);
 const lifecycle = c => c.lifecycle || 'idea';
-const sessTitle = s => s.title || `Untitled · ${s.short}`;
+// What a session is called: your own name for it, else the title Claude Code gave
+// it (read live from its transcript), else the id.
+const sessTitle = s => s.title || s.autoTitle || `Untitled · ${s.short}`;
+const sessTip = s => [sessTitle(s), s.prompt && `last prompt: ${s.prompt}`, s.id].filter(Boolean).join('\n');
 function ancestors(id) { const out = []; let c = cardById(id); while (c && c.parent) { out.unshift(c.parent); c = cardById(c.parent); } return out; }
 function areaOf(id) { let c = cardById(id); while (c && c.parent) c = cardById(c.parent); return c ? areaById(c.area) : null; }
 function isDescendant(id, ofId) { let c = cardById(id); while (c && c.parent) { if (c.parent === ofId) return true; c = cardById(c.parent); } return false; }
@@ -77,7 +80,7 @@ async function load() {
   OV = await api('GET', `/api/overview${state.allRepos ? '?all=1' : ''}`);
   AREAS = OV.areas.map(a => ({ id: a.name, name: a.name, count: a.count }));
   CARDS = OV.items.map(i => ({ id: i.id, name: i.name, area: i.area, parent: i.parent || null, order: i.order, lifecycle: i.lifecycle, human: i.human_status, parkNote: i.park_note || '', hasAi: i.has_ai_state, updated: i.updated }));
-  SESSIONS = OV.sessions.map(s => ({ id: s.id, short: s.short_id, title: s.title || '', state: s.state, attention: s.attention, updated: s.updated_at, cwd: s.cwd, branch: s.branch, inRepo: s.in_repo, item: s.item || null, resume: s.resume }));
+  SESSIONS = OV.sessions.map(s => ({ id: s.id, short: s.short_id, title: s.title || '', autoTitle: s.auto_title || '', prompt: s.last_prompt || '', state: s.state, attention: s.attention, updated: s.updated_at, cwd: s.cwd, branch: s.branch, inRepo: s.in_repo, item: s.item || null, resume: s.resume }));
   if (state.selected && !cardById(state.selected)) { state.selected = null; state.detail = null; }
 }
 async function loadDetail(id) {
@@ -143,7 +146,7 @@ function compStrip(kids) {
   for (const k of ['active', 'idea', 'parked', 'done']) if (counts[k]) strip.appendChild(h('i', { class: `c-${k}`, style: `flex:${counts[k]}` }));
   return strip;
 }
-function sessChip(s) { return h('span', { class: `sess ${s.state}`, 'data-sid': s.id, title: `${sessTitle(s)} — ${STATE_LABEL[s.state] || s.state}${s.attention ? ' · ' + s.attention : ''}` }, h('i', { class: `dot ${s.state}` }), sessTitle(s)); }
+function sessChip(s) { return h('span', { class: `sess ${s.state}`, 'data-sid': s.id, title: `${sessTitle(s)} — ${STATE_LABEL[s.state] || s.state}${s.attention ? ' · ' + s.attention : ''}${s.prompt ? `\n\nlast prompt: ${s.prompt}` : ''}` }, h('i', { class: `dot ${s.state}` }), sessTitle(s)); }
 function cardEl(c, depth = 0) {
   const kids = kidsOf(c.id), sess = sessOf(c.id), lc = lifecycle(c), ag = attn(c.id);
   const isCollapsed = kids.length > 0 && collapsed.has(c.id);
@@ -213,9 +216,10 @@ function renderRail() {
     for (const s of rows) {
       const card = s.item ? cardById(s.item) : null;
       const where = card ? h('span', { class: 'where' }, h('i', { class: `glyph ${lifecycle(card)}` }), card.name) : h('span', { class: 'where none' }, 'unattached · drag onto a card');
-      g.appendChild(h('div', { class: 'srow', 'data-sid': s.id, tabindex: '0' }, h('i', { class: `dot ${s.state}` }),
+      g.appendChild(h('div', { class: 'srow', 'data-sid': s.id, tabindex: '0', title: sessTip(s) }, h('i', { class: `dot ${s.state}` }),
         h('div', { style: 'min-width:0' }, h('div', { class: 't' }, sessTitle(s)),
-          h('div', { class: 'm' }, s.branch ? h('span', { class: 'br' }, s.branch) : (s.cwd ? h('span', { class: 'cwd', title: s.cwd }, shortPath(s.cwd)) : ''), s.attention ? h('span', {}, `· ${s.attention}`) : '', h('span', { class: 'ago', title: s.updated || '' }, timeAgo(s.updated))),
+          s.prompt ? h('div', { class: 'p' }, s.prompt) : '',
+          h('div', { class: 'm' }, s.branch ? h('span', { class: 'br' }, s.branch) : (s.cwd ? h('span', { class: 'cwd', title: s.cwd }, shortPath(s.cwd)) : ''), s.attention ? h('span', {}, `· ${s.attention}`) : '', h('span', { class: 'sid' }, s.short), h('span', { class: 'ago', title: s.updated || '' }, timeAgo(s.updated))),
           where)));
     }
     rail.appendChild(g);
@@ -248,7 +252,8 @@ function renderInspector() {
   if (!sess.length) ss.appendChild(h('div', { class: 'muted', style: 'font-size:12px' }, 'None yet. Drag one from the rail, or start Claude in this card’s worktree and attach it here.'));
   for (const s of sess) {
     const row = h('div', { class: 'ins-sess' }, h('i', { class: `dot ${s.state}` }),
-      h('div', {}, h('div', { class: 't' }, h('button', { class: 'link', 'data-act': 'rename-session', 'data-sid': s.id, title: 'Click to rename' }, sessTitle(s))),
+      h('div', { style: 'min-width:0' }, h('div', { class: 't' }, h('button', { class: 'link', 'data-act': 'rename-session', 'data-sid': s.id, title: s.title ? 'Click to rename' : 'Named by Claude Code — click to rename' }, sessTitle(s))),
+        s.prompt ? h('div', { class: 'p', title: s.prompt }, s.prompt) : '',
         h('div', { class: 'm' }, h('span', {}, (STATE_LABEL[s.state] || s.state) + (s.attention ? ' · ' + s.attention : '')), s.branch ? h('span', { class: 'mono' }, s.branch) : '', h('span', { class: 'mono', title: s.id }, s.short), h('span', { title: s.updated || '' }, timeAgo(s.updated) + ' ago'))),
       h('div', { class: 'acts' }, h('button', { class: `mini ${s.state === 'needs_you' ? 'primary' : ''}`, 'data-act': 'resume', 'data-sid': s.id }, s.resume && s.resume.kind === 'attach' ? 'Attach' : (['ended', 'inactive', 'unknown'].includes(s.state) ? 'Resume' : 'Open')), h('button', { class: 'mini', 'data-act': 'detach', 'data-sid': s.id, title: 'Detach from this card (the Claude session itself is untouched)' }, '×')));
     if (state.resumeOpen === s.id && s.resume) {
@@ -490,7 +495,7 @@ $('#inspector').addEventListener('click', e => {
     if (state.resumeOpen && s.resume) copyText(s.resume.command);
   }
   if (a === 'rename-session') {
-    const s = sessById(act.dataset.sid); if (!s) return; const t = window.prompt('Session title', s.title); if (t === null) return;
+    const s = sessById(act.dataset.sid); if (!s) return; const t = window.prompt('Session title', s.title || s.autoTitle); if (t === null) return;
     mutate(() => api('PATCH', `/api/items/${encodeURIComponent(c.id)}/sessions/${encodeURIComponent(s.id)}`, { title: t.trim() }), { msg: 'Renamed session' });
   }
   if (a === 'move-out') { const par = cardById(c.parent); if (par) moveCard(c, par.parent ? { parent: par.parent } : { parent: null, area: par.area }, par.parent ? `Moved “${c.name}” up under “${cardById(par.parent).name}”` : `Moved “${c.name}” out to ${par.area} — it’s top-level now`); }

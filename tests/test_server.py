@@ -192,3 +192,40 @@ def test_unknown_endpoint_is_reported_as_such(server):
     call = server["call"]
     status, res = call("DELETE", "/api/areas/Some%20Area/nope")
     assert status == 404 and res["error"] == "no such endpoint"
+
+
+def test_sessions_carry_the_title_claude_code_gave_them(server, tmp_path, monkeypatch):
+    """The rail's answer to "what is this session about?" with nobody renaming anything."""
+    from folio import transcript
+
+    call, cfg, repo = server["call"], server["config"], server["repo"]
+    sid = "0b1c2d3e-4f50-4617-8a9b-0c1d2e3f4a5b"
+    proj = tmp_path / "claude" / "projects" / "-some-checkout"
+    proj.mkdir(parents=True)
+    (proj / f"{sid}.jsonl").write_text(
+        json.dumps({"aiTitle": "long-term ranking objective", "sessionId": sid, "type": "ai-title"}) + "\n"
+        + json.dumps({"lastPrompt": "try the discounted variant", "sessionId": sid, "type": "last-prompt"}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    transcript._CACHE.clear()
+    transcript._PATHS.clear()
+
+    now = datetime(2026, 8, 29, 17, 0, tzinfo=timezone.utc)
+    RuntimeStore(cfg.runtime_dir).record_event(
+        {"session_id": sid, "hook_event_name": "Stop", "cwd": str(repo["repo"])}, now=now)
+
+    sess = next(s for s in call("GET", "/api/overview")[1]["sessions"] if s["id"] == sid)
+    assert sess["auto_title"] == "long-term ranking objective"
+    assert sess["last_prompt"] == "try the discounted variant"
+    assert sess["title"] == ""  # nothing in the Markdown yet; yours wins once you set it
+
+    assert call("POST", "/api/areas", {"name": "Ranking"})[0] == 200
+    item = call("POST", "/api/items", {"name": "Objective", "area": "Ranking"})[1]
+    assert call("POST", f"/api/items/{item['id']}/sessions", {"session_id": sid, "title": "the prototype"})[0] == 200
+    sess = next(s for s in call("GET", "/api/overview")[1]["sessions"] if s["id"] == sid)
+    assert (sess["title"], sess["auto_title"]) == ("the prototype", "long-term ranking objective")
+
+    # nothing derived leaks into the Markdown you own
+    files = list((cfg.items_dir / "Ranking").glob("*.md"))
+    assert files and all("long-term ranking objective" not in p.read_text() for p in files)

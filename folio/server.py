@@ -25,6 +25,7 @@ from .config import Config
 from .gitinfo import Worktree, match_cwd, repo_snapshot
 from .items import HUMAN_STATUSES, STATUSES, Item, ItemStore
 from .runtime import NEEDS_YOU, UNKNOWN, RuntimeStore, aggregate_attention, effective_state, is_live, iso, utc_now
+from .transcript import describe as describe_session
 
 STATIC_DIR = Path(__file__).parent / "static"
 _ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
@@ -145,11 +146,20 @@ class App:
         )
 
     def session_view(self, sess: dict, snap: Snapshot) -> dict:
+        """One session, joined from three sources.
+
+        `title` is yours (typed into the item's Markdown) and always wins.
+        `auto_title` / `last_prompt` are read live out of Claude Code's own
+        transcript so an un-renamed session still says what it is about; they
+        are never stored. The UI falls back title -> auto_title -> short id.
+        """
         sid = sess["id"]
         view = {
             "id": sid,
             "short_id": sid[:8],
             "title": sess.get("title") or "",
+            "auto_title": "",
+            "last_prompt": "",
             "state": UNKNOWN,
             "attention": None,
             "last_event": None,
@@ -182,6 +192,11 @@ class App:
             wt = match_cwd(rec.get("cwd"), snap.worktrees)
             if wt:
                 view.update(worktree=wt.path, branch=wt.branch, is_main_worktree=wt.is_main, in_repo=True)
+        try:
+            meta = describe_session(sid, (rec or {}).get("transcript_path"))
+        except Exception:  # noqa: BLE001 -- Claude Code owns this file format; never break the page over it
+            meta = {}
+        view.update(auto_title=meta.get("title") or "", last_prompt=meta.get("last_prompt") or "")
         return view
 
     def item_summary(self, item: Item, snap: Snapshot) -> dict:
