@@ -26,24 +26,48 @@ function el(tag, attrs, ...children) {
   return node;
 }
 
+class ApiError extends Error {
+  constructor(message, status) { super(message); this.status = status; }
+}
+
+let inFlight = 0;  // suppresses the background refresh while a request is in flight
 async function api(method, path, body) {
-  const res = await fetch(path, {
-    method,
-    headers: body ? { 'Content-Type': 'application/json' } : {},
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || res.statusText);
-  return data;
+  inFlight++;
+  try {
+    const res = await fetch(path, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) return data;
+    // folio serves this file from disk but keeps the Python it started with, so a
+    // server that was never restarted 404s routes the UI already knows. Say so.
+    if (res.status === 404 && data.error === 'no such endpoint') {
+      throw new ApiError(`The folio server does not know ${method} ${path} \u2014 it is running older code than this page. `
+        + 'Restart it (stop the process, run folio serve again) and try again.', res.status);
+    }
+    throw new ApiError(data.error || res.statusText, res.status);
+  } finally {
+    inFlight--;
+  }
 }
 
 let toastTimer = null;
-function toast(msg) {
+function hideToast() { document.getElementById('toast').hidden = true; }
+function toast(msg, opts) {
+  const error = !!(opts && opts.error);
   const t = document.getElementById('toast');
-  t.textContent = msg; t.hidden = false;
+  t.className = error ? 'error' : '';
+  const parts = [el('span', {}, msg)];
+  if (error) parts.push(el('button', { class: 'small', onclick: hideToast }, 'Dismiss'));
+  t.replaceChildren(...parts);
+  t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, 1800);
+  // A failed action must not scroll past unread; only successes auto-hide.
+  if (!error) toastTimer = setTimeout(hideToast, 1800);
 }
+function toastError(err) { toast((err && err.message) || String(err), { error: true }); }
 
 async function copyText(text) {
   try { await navigator.clipboard.writeText(text); toast('Copied to clipboard'); }
@@ -94,9 +118,19 @@ function topbar(ov) {
   );
 }
 
+function staleBanner(ov) {
+  const s = ov && ov.server;
+  if (!s || !s.stale) return null;
+  return el('div', { class: 'banner warn' },
+    el('strong', {}, '\u26a0 The folio server is running older code than it is serving.'),
+    ` It started ${timeAgo(s.started)}; folio's Python was edited ${timeAgo(s.code_changed)}. `,
+    'This page is read from disk on every request, so it is newer than the process behind it and buttons added since ',
+    'then fail with \u201cno such endpoint\u201d. Restart it: stop the process and run ', el('code', {}, 'folio serve'), ' again.');
+}
+
 function page(ov, ...content) {
   const app = document.getElementById('app');
-  app.replaceChildren(topbar(ov), el('main', {}, ...content));
+  app.replaceChildren(topbar(ov), el('main', {}, staleBanner(ov), ...content));
 }
 
 function showError(err) {
@@ -133,12 +167,13 @@ async function renderDashboard() {
   page(ov,
     el('div', { class: 'attention' }, attentionPanel('needs', 'Needs you', needs), attentionPanel('working', 'Working', working)),
     observedPanel,
-    ...areas,
+    areas.length ? areas : el('div', { class: 'area-empty' },
+      'No areas yet. An area is just a directory of Markdown files \u2014 create one below.'),
     el('div', { class: 'row', style: 'margin-top:8px' },
       el('button', { onclick: async () => {
         const name = window.prompt('New area name');
         if (!name) return;
-        try { await api('POST', '/api/areas', { name }); route(); } catch (e) { toast(e.message); }
+        try { await api('POST', '/api/areas', { name }); route(); } catch (e) { toastError(e); }
       } }, '+ New area'),
       el('span', { class: 'muted small' }, `data: ${shortPath(ov.data_dir)}/items/<Area>/*.md`)),
   );
@@ -148,7 +183,7 @@ function areaSection(area, items, byId) {
   const quick = el('input', { type: 'text', placeholder: `Quick idea in ${area.name}…`, onkeydown: async (e) => {
     if (e.key !== 'Enter' || !quick.value.trim()) return;
     try { await api('POST', '/api/items', { name: quick.value.trim(), area: area.name, status: 'idea' }); quick.value = ''; route(); }
-    catch (err) { toast(err.message); }
+    catch (err) { toastError(err); }
   } });
   const columns = STATUS_ORDER.map(status => {
     let list = items.filter(i => i.status === status);
@@ -157,6 +192,10 @@ function areaSection(area, items, byId) {
       el('h4', {}, STATUS_TITLE[status], ' ', el('span', { class: 'muted' }, list.length || '')),
       list.length ? list.map(i => card(i, byId)) : el('div', { class: 'empty' }, '—'));
   });
+  const board = items.length ? el('div', { class: 'columns' }, ...columns)
+    : el('div', { class: 'area-empty' }, area.count
+      ? `Every item in this area (${plural(area.count, 'item')}) is nested under a parent elsewhere.`
+      : 'No items yet \u2014 type an idea above, or delete the area.');
   return el('section', { class: 'area' },
     el('div', { class: 'area-head' },
       el('h2', {}, area.name), el('span', { class: 'muted small' }, plural(area.count, 'item')),
@@ -165,9 +204,9 @@ function areaSection(area, items, byId) {
       el('button', { class: 'small danger', title: 'Delete this area and every item in it', onclick: async () => {
         const what = area.count ? ` and the ${plural(area.count, 'item')} in it` : '';
         if (!window.confirm(`Delete area "${area.name}"${what}? The directory and every Markdown file inside it will be removed.`)) return;
-        try { await api('DELETE', `/api/areas/${encodeURIComponent(area.name)}`); toast(`Deleted area ${area.name}`); route(); } catch (e) { toast(e.message); }
+        try { await api('DELETE', `/api/areas/${encodeURIComponent(area.name)}`); toast(`Deleted area ${area.name}`); route(); } catch (e) { toastError(e); }
       } }, 'Delete area')),
-    el('div', { class: 'columns' }, ...columns));
+    board);
 }
 
 function card(item, byId) {
@@ -189,7 +228,7 @@ function card(item, byId) {
 async function renderItem(id) {
   const it = await api('GET', `/api/items/${encodeURIComponent(id)}`);
   const ov = { repo: null };
-  const patch = async (body) => { try { await api('PATCH', `/api/items/${it.id}`, body); route(); } catch (e) { toast(e.message); } };
+  const patch = async (body) => { try { await api('PATCH', `/api/items/${it.id}`, body); route(); } catch (e) { toastError(e); } };
 
   // header
   const crumbs = el('div', { class: 'crumbs' }, el('a', { href: '#/' }, 'Dashboard'), ' › ', it.area,
@@ -213,7 +252,7 @@ async function renderItem(id) {
     el('div', { class: 'footer' }, el('span', { class: 'mono' }, it.path),
       el('button', { class: 'danger small', onclick: async () => {
         if (!window.confirm(`Delete "${it.name}"? The Markdown file will be removed.`)) return;
-        try { await api('DELETE', `/api/items/${it.id}`); location.hash = '#/'; } catch (e) { toast(e.message); }
+        try { await api('DELETE', `/api/items/${it.id}`); location.hash = '#/'; } catch (e) { toastError(e); }
       } }, 'Delete item')));
   // fetch repo for the topbar without blocking the page
   api('GET', '/api/repo').then(repo => document.querySelector('.topbar').replaceWith(topbar({ repo }))).catch(() => {});
@@ -238,7 +277,7 @@ function sessionsBlock(it) {
   const rows = it.sessions.map(s => el('tr', {},
     el('td', {}, el('button', { class: 'link', title: 'click to edit title', onclick: async () => {
       const t = window.prompt('Session title', s.title); if (t === null) return;
-      try { await api('PATCH', `/api/items/${it.id}/sessions/${s.id}`, { title: t }); route(); } catch (e) { toast(e.message); }
+      try { await api('PATCH', `/api/items/${it.id}/sessions/${s.id}`, { title: t }); route(); } catch (e) { toastError(e); }
     } }, s.title || el('span', { class: 'muted' }, 'untitled')), el('div', { class: 'mono muted', title: s.id }, s.short_id)),
     el('td', {}, stateBadge(s.state, s.attention), s.last_event ? el('div', { class: 'muted small' }, s.last_event) : null),
     el('td', { title: s.updated_at || '' }, timeAgo(s.updated_at)),
@@ -249,7 +288,7 @@ function sessionsBlock(it) {
       el('button', { class: 'primary small', title: s.resume && s.resume.note || '', onclick: () => showResume(s) }, s.resume && s.resume.kind === 'attach' ? 'Attach' : 'Resume'),
       el('button', { class: 'small', onclick: async () => {
         if (!window.confirm('Detach this session from the item? (The Claude session itself is untouched.)')) return;
-        try { await api('DELETE', `/api/items/${it.id}/sessions/${s.id}`); route(); } catch (e) { toast(e.message); }
+        try { await api('DELETE', `/api/items/${it.id}/sessions/${s.id}`); route(); } catch (e) { toastError(e); }
       } }, 'Detach')))));
   const table = it.sessions.length ? el('table', { class: 'sessions' },
     el('thead', {}, el('tr', {}, el('th', {}, 'Session'), el('th', {}, 'State'), el('th', {}, 'Last update'), el('th', {}, 'Worktree / branch'), el('th', {}, '')))
@@ -286,8 +325,8 @@ function sessionsBlock(it) {
         el('button', { class: 'primary', onclick: async () => {
           const picked = attachArea.querySelector('input[name=sess]:checked');
           const sid = (manual.value.trim() || (picked && picked.value) || '');
-          if (!sid) { toast('Pick a session or paste an id'); return; }
-          try { await api('POST', `/api/items/${it.id}/sessions`, { session_id: sid, title: titleInput.value }); route(); } catch (e) { toast(e.message); }
+          if (!sid) { toast('Pick a session or paste an id', { error: true }); return; }
+          try { await api('POST', `/api/items/${it.id}/sessions`, { session_id: sid, title: titleInput.value }); route(); } catch (e) { toastError(e); }
         } }, 'Attach'),
         el('button', { onclick: () => { attachArea.replaceChildren(); attachBtn.hidden = false; } }, 'Cancel')));
   }
@@ -299,7 +338,7 @@ function sessionsBlock(it) {
 function childrenBlock(it) {
   const quick = el('input', { type: 'text', placeholder: 'New child item…', style: 'width:280px', onkeydown: async (e) => {
     if (e.key !== 'Enter' || !quick.value.trim()) return;
-    try { await api('POST', '/api/items', { name: quick.value.trim(), area: it.area, parent: it.id, status: 'idea' }); route(); } catch (err) { toast(err.message); }
+    try { await api('POST', '/api/items', { name: quick.value.trim(), area: it.area, parent: it.id, status: 'idea' }); route(); } catch (err) { toastError(err); }
   } });
   return el('section', { class: 'block' },
     el('h3', {}, 'Children', el('span', { class: 'muted small' }, it.children.length || ''), el('span', { class: 'grow' }), quick),
@@ -341,7 +380,7 @@ function contextBlock(it, patch) {
     el('h3', {}, 'Context', el('span', { class: 'muted small' }, it.context.length || '')),
     items.length ? el('ul', { class: 'ctx' }, items) : el('div', { class: 'muted small' }, 'No context refs. Add design docs, files, links, artifacts…'),
     el('div', { class: 'row', style: 'margin-top:10px' }, t, r, el('button', { onclick: () => {
-      if (!r.value.trim()) { toast('ref is required'); return; }
+      if (!r.value.trim()) { toast('ref is required', { error: true }); return; }
       patch({ context: [...it.context, { title: t.value.trim() || r.value.trim(), ref: r.value.trim() }] });
     } }, 'Add')));
 }
@@ -360,7 +399,7 @@ async function renderNew(params) {
     try {
       const it = await api('POST', '/api/items', { name: name.value, area: area.value, status: status.value, parent: parent.value || null, notes: notes.value });
       location.hash = `#/item/${it.id}`;
-    } catch (err) { toast(err.message); }
+    } catch (err) { toastError(err); }
   } },
     el('label', {}, el('span', {}, 'Name'), name),
     el('label', {}, el('span', {}, 'Area'), area),
@@ -385,7 +424,7 @@ async function renderSessions() {
     el('td', {}, s.in_repo ? [el('span', { class: 'badge' }, s.branch || 'detached'), ' ', el('span', { class: 'mono muted small' }, shortPath(s.worktree))] : el('span', { class: 'mono muted small' }, shortPath(s.cwd) || '—')),
     el('td', {}, s.attached_to.length ? s.attached_to.map(a => el('div', {}, el('a', { href: `#/item/${a.id}` }, a.name))) : el('span', { class: 'muted' }, 'unattached')),
     el('td', {}, el('div', { class: 'row' },
-      selectEl(itemOptions, '', async (v) => { if (!v) return; try { await api('POST', `/api/items/${v}/sessions`, { session_id: s.id, title: '' }); toast('Attached'); route(); } catch (e) { toast(e.message); } }),
+      selectEl(itemOptions, '', async (v) => { if (!v) return; try { await api('POST', `/api/items/${v}/sessions`, { session_id: s.id, title: '' }); toast('Attached'); route(); } catch (e) { toastError(e); } }),
       el('button', { class: 'small', title: s.resume && s.resume.note || '', onclick: () => copyText(s.resume_command) }, s.resume && s.resume.kind === 'attach' ? 'Copy attach' : 'Copy resume')))));
   page(ov,
     el('div', { class: 'title-row' }, el('h1', {}, 'Recently observed Claude sessions'), el('span', { class: 'grow' }),
@@ -414,4 +453,4 @@ function route() {
 window.addEventListener('hashchange', route);
 route();
 // Live refresh of runtime state (skipped while typing or editing notes).
-setInterval(() => { if (!document.hidden && !isEditing()) route(); }, 5000);
+setInterval(() => { if (!document.hidden && !isEditing() && !inFlight) route(); }, 5000);

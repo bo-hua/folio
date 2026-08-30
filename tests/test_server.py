@@ -8,6 +8,7 @@ import pytest
 
 from folio.config import Config
 from folio.runtime import RuntimeStore
+from folio import server as server_mod
 from folio.server import make_server, parse_bind, resume_command
 
 
@@ -162,3 +163,26 @@ def test_static_shell_and_bind_guard(server):
     for bad in ("0.0.0.0:4317", "192.168.1.5:4317", ":::80"):
         with pytest.raises(ValueError):
             parse_bind(bad)
+
+
+def test_overview_flags_a_server_older_than_its_code(server, monkeypatch):
+    """The UI is served from disk; the process is not. Report the mismatch.
+
+    Without this, editing folio and forgetting to restart it leaves buttons the
+    running process has no route for -- they 404 and appear to do nothing.
+    """
+    call = server["call"]
+    status, ov = call("GET", "/api/overview")
+    assert status == 200 and ov["server"]["stale"] is False
+    assert ov["server"]["version"] and ov["server"]["started"]
+
+    monkeypatch.setattr(server_mod, "code_mtime", lambda: datetime.now(timezone.utc).timestamp() + 60)
+    status, ov = call("GET", "/api/overview")
+    assert ov["server"]["stale"] is True and ov["server"]["code_changed"]
+
+
+def test_unknown_endpoint_is_reported_as_such(server):
+    """The UI keys its "restart the server" hint off this exact message."""
+    call = server["call"]
+    status, res = call("DELETE", "/api/areas/Some%20Area/nope")
+    assert status == 404 and res["error"] == "no such endpoint"

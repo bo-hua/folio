@@ -109,5 +109,12 @@ table.sessions tr:last-child td { border-bottom: none; }
 form.new label { display: block; margin-bottom: 12px; }
 form.new label span { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
 form.new input[type=text], form.new select { width: 100%; max-width: 520px; }
-#toast { position: fixed; bottom: 18px; right: 18px; background: #0f1720; color: #fff; padding: 8px 14px; border-radius: 8px; font-size: 13px; z-index: 5; }
+#toast { position: fixed; bottom: 18px; right: 18px; background: #0f1720; color: #fff; padding: 8px 14px; border-radius: 8px; font-size: 13px; z-index: 5;
+  display: flex; gap: 12px; align-items: center; max-width: min(560px, calc(100vw - 36px)); }
+#toast.error { background: #7f1d1d; }
+#toast button { background: rgba(255, 255, 255, .16); border: 1px solid rgba(255, 255, 255, .3); color: #fff; flex: none; }
+#toast button:hover { background: rgba(255, 255, 255, .26); border-color: rgba(255, 255, 255, .5); }
+.banner.warn { background: #fff7ed; border: 1px solid #f0b27a; color: #7c2d12; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; }
+.banner.warn code { font-family: var(--mono); background: rgba(124, 45, 18, .1); padding: 1px 5px; border-radius: 4px; }
+.area-empty { color: var(--muted); font-size: 13px; border: 1px dashed var(--line); border-radius: 8px; padding: 14px; background: var(--panel); }
 .error { background: #fde8e6; color: var(--needs); padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; }

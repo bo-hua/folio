@@ -32,6 +32,12 @@ uv pip install --python .venv/bin/python -e '.[dev]'   # or: .venv/bin/pip insta
 
 `folio serve` refuses to bind to anything but a loopback address.
 
+**Restart `folio serve` after editing folio itself.** The HTML/CSS/JS is read
+from disk on every request, but the running process keeps the Python it started
+with -- so an un-restarted server hands the browser buttons whose endpoints it
+has never heard of, and they fail with `no such endpoint`. The dashboard detects
+this (server start time vs. the newest mtime under `folio/`) and shows a banner.
+
 Other commands: `folio worktrees` (what git reports), `folio sessions [--all]`
 (what the hook has observed), `folio hooks install|uninstall [--dry-run]`.
 
