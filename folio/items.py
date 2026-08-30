@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import re
 import secrets
+import shutil
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -232,10 +233,37 @@ class ItemStore:
         )
 
     def create_area(self, name: str) -> str:
+        name = self._check_area_name(name)
+        (self.items_dir / name).mkdir(parents=True, exist_ok=True)
+        return name
+
+    def delete_area(self, name: str) -> tuple[list[Item], list[Item]]:
+        """Remove an Area directory together with every item in it.
+
+        Items in *other* areas whose parent lived here are kept but detached
+        (their `parent` is cleared) so no file is left pointing at an id that
+        no longer exists. Returns (deleted items, detached items).
+        """
+        name = self._check_area_name(name)
+        path = self.items_dir / name
+        if not path.is_dir():
+            raise LookupError(f"unknown area {name!r}")
+        items = self.list_items()
+        gone = [i for i in items if i.area == name]
+        gone_ids = {i.id for i in gone}
+        shutil.rmtree(path)
+        detached: list[Item] = []
+        for other in items:
+            if other.area != name and other.parent in gone_ids:
+                other.parent = None
+                detached.append(self.save(other))
+        return gone, detached
+
+    @staticmethod
+    def _check_area_name(name: str) -> str:
         name = name.strip()
         if not name or "/" in name or name.startswith((".", "_")):
             raise ValueError("invalid area name")
-        (self.items_dir / name).mkdir(parents=True, exist_ok=True)
         return name
 
     # -- reading ----------------------------------------------------------- #

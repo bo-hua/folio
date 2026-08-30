@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import markdown as md
 
@@ -332,6 +332,22 @@ class App:
             raise ApiError(400, str(exc)) from exc
         return {"areas": self.items.areas()}
 
+    def delete_area(self, name: str) -> dict:
+        """Delete an Area and every item in it (the UI confirms first)."""
+        name = unquote(name)
+        try:
+            gone, detached = self.items.delete_area(name)
+        except LookupError as exc:
+            raise ApiError(404, str(exc)) from exc
+        except ValueError as exc:
+            raise ApiError(400, str(exc)) from exc
+        return {
+            "deleted": name,
+            "items_deleted": [i.id for i in gone],
+            "items_detached": [i.id for i in detached],
+            "areas": self.items.areas(),
+        }
+
     def resume(self, sid: str) -> dict:
         if not _ID_RE.match(sid):
             raise ApiError(400, "bad session id")
@@ -346,6 +362,7 @@ class App:
         ("GET", r"^/api/repo$", "repo"),
         ("GET", r"^/api/areas$", "areas"),
         ("POST", r"^/api/areas$", "create_area"),
+        ("DELETE", r"^/api/areas/([^/]+)$", "delete_area"),
         ("POST", r"^/api/items$", "create_item"),
         ("GET", r"^/api/items/([^/]+)$", "item_detail"),
         ("PATCH", r"^/api/items/([^/]+)$", "update_item"),

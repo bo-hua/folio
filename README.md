@@ -140,6 +140,9 @@ To test without touching user-level settings, install into a project:
   in columns Active · Waiting · Ideas · Parked · Recently done. Cards show attached
   session counts and child rows; a child's attention bubbles up to the parent card.
   Type into "Quick idea in …" and press Enter to create an idea in one step.
+  **+ New area** creates a directory; **Delete area** (per Area header, after a
+  confirm) removes the directory with every item in it. Items in *other* Areas
+  whose parent lived there are kept and become top-level.
 * **Item** – rename, status/area/parent selects, attached Claude sessions with live
   state · last update · worktree · branch · cwd, **Resume / Attach** (shows and copies
   the right command: `claude attach <short-id>` for a *running background* session,
@@ -185,7 +188,8 @@ auth or cloud component. Moving between machines is a `config.toml` change.
 Covers Markdown round-trips without destroying notes/unknown keys, timestamp
 behaviour, parent→child derivation, real `git worktree` discovery + cwd→worktree
 matching (incl. symlinked paths), hook event→state parsing, metadata-only
-persistence, item-level attention aggregation, attach/detach persistence, the
+persistence, item-level attention aggregation, attach/detach persistence, area
+deletion (cascade + cross-area detach), the
 settings.json merge, the hook CLI as a silent observer, and an end-to-end HTTP
 flow against a fixture repo.
 

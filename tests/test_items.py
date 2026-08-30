@@ -141,3 +141,29 @@ def test_sections():
 def test_status_validation(store):
     with pytest.raises(ValueError):
         store.create("Bad", "Area", status="blocked")
+
+
+def test_delete_area_cascades_and_detaches_cross_area_children(store):
+    parent = store.create("Big thing", "Ranking")
+    child = store.create("Part one", "Ranking", parent=parent.id)
+    cousin = store.create("Lives elsewhere", "Other", parent=child.id)
+    unrelated = store.create("Unrelated", "Other")
+    (store.items_dir / "Ranking" / ".DS_Store").write_bytes(b"")  # stray files never block deletion
+
+    gone, detached = store.delete_area("Ranking")
+    assert sorted(i.id for i in gone) == sorted([parent.id, child.id])
+    assert [i.id for i in detached] == [cousin.id]
+    assert not (store.items_dir / "Ranking").exists()
+    assert store.areas() == ["Other"]
+    assert store.get(parent.id) is None and store.get(child.id) is None
+    # the cross-area grandchild survives as a top-level item; nothing points at a dead id
+    assert store.get(cousin.id).parent is None
+    assert "parent:" not in cousin.path.read_text()
+    assert store.get(unrelated.id).parent is None and "Unrelated" in unrelated.path.read_text()
+
+    with pytest.raises(LookupError):
+        store.delete_area("Ranking")
+    for bad in ("", "../Other", ".hidden", "_private"):
+        with pytest.raises(ValueError):
+            store.delete_area(bad)
+    assert store.areas() == ["Other"]

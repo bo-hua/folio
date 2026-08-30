@@ -161,7 +161,12 @@ function areaSection(area, items, byId) {
     el('div', { class: 'area-head' },
       el('h2', {}, area.name), el('span', { class: 'muted small' }, plural(area.count, 'item')),
       el('span', { class: 'grow' }),
-      el('div', { class: 'quick' }, quick, el('a', { href: `#/new?area=${encodeURIComponent(area.name)}`, class: 'small' }, 'full form'))),
+      el('div', { class: 'quick' }, quick, el('a', { href: `#/new?area=${encodeURIComponent(area.name)}`, class: 'small' }, 'full form')),
+      el('button', { class: 'small danger', title: 'Delete this area and every item in it', onclick: async () => {
+        const what = area.count ? ` and the ${plural(area.count, 'item')} in it` : '';
+        if (!window.confirm(`Delete area "${area.name}"${what}? The directory and every Markdown file inside it will be removed.`)) return;
+        try { await api('DELETE', `/api/areas/${encodeURIComponent(area.name)}`); toast(`Deleted area ${area.name}`); route(); } catch (e) { toast(e.message); }
+      } }, 'Delete area')),
     el('div', { class: 'columns' }, ...columns));
 }
 

@@ -127,6 +127,29 @@ def test_end_to_end_flow(server):
     assert call("DELETE", f"/api/items/{parent['id']}")[0] == 200
 
 
+def test_delete_area_removes_directory_and_items(server):
+    call, cfg = server["call"], server["config"]
+    assert call("POST", "/api/areas", {"name": "Client Work"})[0] == 200
+    status, top = call("POST", "/api/items", {"name": "Top", "area": "Client Work"})
+    status, kid = call("POST", "/api/items", {"name": "Kid", "area": "Client Work", "parent": top["id"]})
+    status, elsewhere = call("POST", "/api/items", {"name": "Elsewhere", "area": "Other", "parent": kid["id"]})
+    assert status == 201 and (cfg.items_dir / "Client Work" / "kid.md").exists()
+
+    status, res = call("DELETE", "/api/areas/Client%20Work")  # names are URL-encoded in the path
+    assert status == 200 and res["deleted"] == "Client Work" and res["areas"] == ["Other"]
+    assert sorted(res["items_deleted"]) == sorted([top["id"], kid["id"]]) and res["items_detached"] == [elsewhere["id"]]
+    assert not (cfg.items_dir / "Client Work").exists()
+    assert call("GET", f"/api/items/{top['id']}")[0] == 404
+    status, detail = call("GET", f"/api/items/{elsewhere['id']}")
+    assert status == 200 and detail["parent"] is None and detail["parent_item"] is None
+    status, ov = call("GET", "/api/overview")
+    assert [a["name"] for a in ov["areas"]] == ["Other"]
+
+    assert call("DELETE", "/api/areas/Client%20Work")[0] == 404
+    assert call("DELETE", "/api/areas/.hidden")[0] == 400
+    assert call("GET", "/api/areas/Other")[0] == 405
+
+
 def test_static_shell_and_bind_guard(server):
     with urllib.request.urlopen(server["url"] + "/", timeout=10) as res:
         assert res.status == 200 and b"<title>folio</title>" in res.read()
