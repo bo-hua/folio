@@ -1,7 +1,95 @@
 # folio
 
-Organize AI-assisted work around the **project / purpose / problem** being solved,
-not around the individual Claude Code sessions created while solving it.
+**A local, single-user home for work you do with Claude Code — organized around the
+problem you are solving, not around the sessions you opened while solving it.**
+
+folio is a small web app plus CLI that runs on the machine where you run Claude Code.
+It keeps a durable, hand-editable Markdown file per piece of work, attaches Claude
+sessions to it, and joins that against live session state and git worktrees so one
+page can answer: *what am I working on, and what is blocked on me right now?*
+
+No database, no cloud, no account, no auth. One Python process, ~3k lines, two
+runtime dependencies. Your data is a directory of Markdown files you can grep,
+diff, and edit in any editor.
+
+---
+
+## The problem
+
+A Claude Code session is the unit of *interaction*. It is almost never the unit of
+*work*.
+
+One real task — "make the long-term ranking objective actually long-term" — spans a
+session to survey prior art, a session that forks off to prototype, two more after
+you come back on Monday, one that got compacted into uselessness and abandoned, and
+a background session still churning in a worktree you have forgotten the name of.
+Meanwhile three unrelated tasks are in flight in adjacent terminal tabs.
+
+So you end up asking questions the tools cannot answer:
+
+* Which of my seven live sessions is **waiting on me** right now — a permission
+  prompt, a question — versus still working?
+* Which session was the one exploring the alternative objective? What was I going
+  to do next on it?
+* Where does *this* piece of work stand, three days and five sessions later, when
+  every transcript is gone from my terminal scrollback?
+* What am I actually carrying? Not "what's in my shell history" — what problems am
+  I currently on the hook for?
+
+Terminal tabs answer none of that. Neither does a generic task tracker, which knows
+nothing about your sessions. The two halves — *durable intent* and *ephemeral
+runtime* — live in different places and never meet.
+
+## What folio does
+
+folio holds the durable half and **derives** the ephemeral half, then shows them
+side by side.
+
+* **Durable (you own it, it's Markdown).** An *Item* is one `.md` file: name,
+  status, notes, context links, and the ids of the Claude sessions that belong to
+  it. Items nest (a prototype under an investigation). They live in *Areas*, which
+  are just directories.
+* **Ephemeral (folio derives it, never stores it in your files).** A metadata-only
+  Claude Code hook records each session's coarse state — *working / needs you /
+  ready / ended*. `git worktree list` supplies worktrees and branches. Both are
+  re-read on every request and joined to the Markdown by session id.
+* **The join is the product.** The dashboard opens with a **Needs you** strip
+  across every Area, then **Working**, then your Items by status. A child item's
+  attention bubbles up to its parent card, so a background session hitting a
+  permission prompt three levels down still surfaces at the top of the page.
+
+Sessions are attached to Items, not the other way round. Sessions come and go;
+the Item is what persists.
+
+### It observes. It never drives.
+
+The hook is a pure observer: Claude pipes it one JSON event on stdin, it records
+coarse metadata and exits 0 **without printing anything**, so it can never approve,
+deny, block, or otherwise alter a permission decision. It stores session ids,
+states, timestamps, cwd, permission mode, and a best-effort pid — **never** prompts,
+responses, tool arguments, transcripts, or code.
+
+folio also never launches, steers, or kills a session. "Resume" hands you the
+correct shell command to copy. That boundary is deliberate: folio is safe to leave
+running because there is nothing it can do to your agents.
+
+## Is this for you?
+
+Good fit if you:
+
+* run **several Claude Code sessions in parallel**, often in git worktrees, often
+  background sessions you check on later;
+* work on a **devbox over SSH** and want a browser view of it from your laptop;
+* want work notes that survive the session, in **files you own**, greppable and
+  diffable, not locked in an app;
+* like small, boring, inspectable tools.
+
+Probably not for you if you want a team tracker (folio is single-user, loopback-only,
+no auth, no sharing), an agent orchestrator (see above — it only watches), a
+transcript viewer, or something that works across many repositories at once (the
+MVP tracks exactly one).
+
+## Concepts
 
 ```
 Area  (a directory)
@@ -10,13 +98,30 @@ Area  (a directory)
         └── 0..N Claude Code sessions (ids + human titles; live state joined at runtime)
 ```
 
-* **Markdown is the source of truth.** Every Item is a small, hand-editable `.md`
-  file with YAML frontmatter under `~/.cc-workspace/items/<Area>/`.
-* **Runtime is derived, not stored.** Git worktrees/branches come from `git worktree
-  list`; Claude session state comes from a metadata-only hook. The UI joins the two
-  with the Markdown by session id.
+| | what it is | where it lives |
+|---|---|---|
+| **Area** | a bucket — a project, a theme, an `Inbox` | a directory under `items/` |
+| **Item** | one piece of work; the durable unit | one `.md` file with YAML frontmatter |
+| **Child item** | a sub-problem or spin-off | an Item whose frontmatter has `parent: <id>` |
+| **Session** | a Claude Code session attached to an Item | an id + title in the Item's frontmatter |
+| **Status** | *human* state: idea / active / waiting / done / parked | frontmatter `status:` |
+| **Runtime state** | *machine* state: working / needs you / ready / ended / inactive | derived from the hook, never written to Markdown |
+
+Status and runtime state are shown side by side and **never merged** — "I consider
+this parked" and "a session on it is asking for permission" are different facts.
+
+### Design rules
+
+* **Markdown is the source of truth.** Every Item is a small, hand-editable file.
+  Edit it in your editor while folio is running; folio re-reads on every request.
+  The UI rewrites only the section it owns and preserves unknown frontmatter keys.
+* **Runtime is derived, not stored.** Worktrees come from git. Session state comes
+  from the hook. Children come from scanning `parent:` fields. Nothing derived is
+  duplicated into your files, so nothing can go stale.
 * **Deliberately small.** One Python process (stdlib `http.server`), two runtime
-  dependencies (`pyyaml`, `markdown`), a vanilla-JS UI, no database, no cloud, no auth.
+  dependencies (`pyyaml`, `markdown`), a vanilla-JS UI, no build step, no database,
+  no cloud, no auth, no cache — every request re-reads the item files (fine for
+  hundreds).
 
 ## Quick start (local)
 
@@ -26,16 +131,38 @@ uv venv .venv --python 3.12                    # or: python3 -m venv .venv
 uv pip install --python .venv/bin/python -e '.[dev]'   # or: .venv/bin/pip install -e '.[dev]'
 
 .venv/bin/folio init --repo /path/to/the/one/git/repo   # writes ~/.cc-workspace/config.toml
-.venv/bin/folio hooks print                              # show the Claude hook config (see below)
-.venv/bin/folio serve                                    # http://127.0.0.1:4317/
+.venv/bin/folio hooks install --dry-run                 # inspect the Claude hook merge
+.venv/bin/folio hooks install                           # then restart running Claude sessions
+.venv/bin/folio serve                                   # http://127.0.0.1:4317/
 ```
 
 `folio serve` refuses to bind to anything but a loopback address.
 
 Other commands: `folio worktrees` (what git reports), `folio sessions [--all]`
-(what the hook has observed), `folio hooks install|uninstall [--dry-run]`.
+(what the hook has observed), `folio hooks print|install|uninstall [--dry-run]`.
 
 Data directory: `~/.cc-workspace` by default, or `--data-dir PATH` / `FOLIO_DATA_DIR=PATH`.
+
+## A day with folio
+
+1. **Capture.** An idea arrives mid-morning. Type it into "Quick idea in Ranking"
+   on the dashboard and press Enter — one keystroke, an Item exists, you move on.
+2. **Start.** You open it, set status *active*, and start a Claude session in a
+   worktree the usual way. Back in folio, **Attach Claude session** lists sessions
+   the hook has recently seen inside your repo; pick yours and give it a title
+   ("Survey existing approaches").
+3. **Fan out.** The survey suggests a prototype. Add it as a **child item**, attach
+   the forked session to the child. The parent card now shows both.
+4. **Triage.** Two hours later you have five sessions running. Instead of cycling
+   terminal tabs, you look at the dashboard: *Needs you · permission* on one card,
+   *Working* on two, the rest quiet. You handle the one that is actually blocked.
+5. **Come back.** Next morning, the Item page tells you where things stood — your
+   notes, the AI-state paragraph, the attached sessions with their last update,
+   worktree, and branch. **Resume / Attach** gives you the exact command for each
+   session (`claude attach <short-id>` for a live background session, otherwise
+   `cd <cwd> && claude --resume <id>`, plus stop-then-resume and `--fork-session`).
+6. **Close out.** Status → *done*. It drops into "Recently done" for that Area and
+   stops competing for your attention; the file and its history stay.
 
 ## Data layout (all user data lives outside this repo)
 
@@ -52,6 +179,8 @@ Data directory: `~/.cc-workspace` by default, or `--data-dir PATH` / `FOLIO_DATA
     sessions/<session-id>.json   ephemeral Claude state written by the hook (safe to delete)
     hook-errors.log              only present if the hook ever hit an exception
 ```
+
+Back up `items/`; `runtime/` is disposable.
 
 ### Item file
 
@@ -136,6 +265,10 @@ To test without touching user-level settings, install into a project:
 
 ## Using the UI
 
+Vanilla JS, no build step, no framework. The page re-renders every 5 seconds so
+runtime state stays current without a reload (paused while you are typing or
+editing notes).
+
 * **Dashboard** – *Needs you* / *Working* strips across all Areas, then each Area
   in columns Active · Waiting · Ideas · Parked · Recently done. Cards show attached
   session counts and child rows; a child's attention bubbles up to the parent card.
@@ -153,13 +286,18 @@ To test without touching user-level settings, install into a project:
   paths get a Copy button).
 * **Sessions** – everything the hook has observed for the configured repo, with
   attach-to-item and copy-resume actions.
+* **+ New item** – the full form, when the dashboard's one-line quick-add is not
+  enough (name, area, status, parent).
 
 Item workflow status (`active`, `waiting`, …) is human state; *Needs you* /
 *Working* is ephemeral runtime state. They are shown side by side, never merged.
 
 ## Running on a devbox behind SSH port forwarding
 
-On the devbox (same machine as Claude Code + the repo + its worktrees):
+This is the intended setup: Claude Code, the repo, its worktrees and folio all live
+on the devbox; only a browser tab lives on the laptop.
+
+On the devbox:
 
 ```bash
 git clone <this repo> ~/code/folio && cd ~/code/folio
@@ -179,6 +317,23 @@ ssh -L 4317:127.0.0.1:4317 devbox
 Nothing but the loopback interface is ever exposed; the app itself has no SSH,
 auth or cloud component. Moving between machines is a `config.toml` change.
 
+## HTTP API
+
+The UI is a client of a small JSON API; anything the UI does, a script can do too.
+
+| method | path | purpose |
+|---|---|---|
+| GET | `/api/overview` | everything the dashboard needs (areas, items, rolled-up runtime state) |
+| GET | `/api/repo` | git worktree snapshot |
+| GET, POST | `/api/areas` | list / create Areas |
+| DELETE | `/api/areas/<name>` | delete an Area and its items (cascade) |
+| POST | `/api/items` | create an Item |
+| GET, PATCH, DELETE | `/api/items/<id>` | read / update / delete an Item |
+| POST | `/api/items/<id>/sessions` | attach a session |
+| PATCH, DELETE | `/api/items/<id>/sessions/<sid>` | retitle / detach a session |
+| GET | `/api/sessions[?all=1]` | sessions the hook has observed |
+| GET | `/api/sessions/<sid>/resume` | how to get back into that session |
+
 ## Tests
 
 ```bash
@@ -189,11 +344,13 @@ Covers Markdown round-trips without destroying notes/unknown keys, timestamp
 behaviour, parent→child derivation, real `git worktree` discovery + cwd→worktree
 matching (incl. symlinked paths), hook event→state parsing, metadata-only
 persistence, item-level attention aggregation, attach/detach persistence, area
-deletion (cascade + cross-area detach), the
-settings.json merge, the hook CLI as a silent observer, and an end-to-end HTTP
-flow against a fixture repo.
+deletion (cascade + cross-area detach), the settings.json merge, the hook CLI as a
+silent observer, and an end-to-end HTTP flow against a fixture repo.
 
 ## Architecture notes / replacing pieces later
+
+The Claude-specific surface is deliberately confined to one small module, so folio
+is not permanently married to Claude Code.
 
 * `folio/items.py` – Markdown store (no knowledge of Claude or git).
 * `folio/gitinfo.py` – `git worktree list --porcelain` + longest-prefix cwd match.
@@ -201,10 +358,19 @@ flow against a fixture repo.
   events to coarse states; everything downstream only sees `working / needs_you /
   ready / ended / inactive / unknown`. Another agent system would provide a
   different `transition()` and hook.
+* `folio/hook.py` / `folio/hooks.py` – the observer entrypoint, and the
+  settings.json merge/unmerge.
 * `folio/server.py` – JSON API + static files. `resume_command()` is a plain
   string on purpose; a richer resume mechanism can replace it without touching
   the Markdown.
+* `folio/static/` – the whole UI: one HTML file, one CSS file, one JS file.
 * No cache/index: every request re-reads the item files (fine for hundreds).
+
+## Non-goals
+
+folio deliberately does **not**: launch, steer, approve, or kill Claude sessions;
+read or store transcripts, prompts, or tool arguments; sync to a server; support
+multiple users or auth; or replace your issue tracker for team-visible work.
 
 ## Known limitations (MVP)
 
