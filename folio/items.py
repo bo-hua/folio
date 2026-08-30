@@ -23,9 +23,15 @@ from typing import Callable, Iterable
 
 import yaml
 
+# `status` semantics: only `done` and `parked` are chosen by a human. Anything else
+# means "open" -- the UI derives idea/active from what is attached, and save()
+# re-snapshots that derivation into the file so hand readers still see something
+# truthful. `waiting` is legacy and is read as parked with the note "waiting".
 STATUSES = ("idea", "active", "waiting", "done", "parked")
+HUMAN_STATUSES = ("done", "parked")
 DEFAULT_STATUS = "idea"
-KNOWN_KEYS = ("id", "name", "created", "updated", "status", "parent", "sessions", "context")
+KNOWN_KEYS = ("id", "name", "created", "updated", "status", "parent", "order", "park_note", "sessions", "context")
+_UNORDERED = 10**9  # items without an `order` sort after ordered siblings, by creation time
 _ID_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
 _FENCE_RE = re.compile(r"^(```|~~~)")
 _H2_RE = re.compile(r"^## +(.+?)\s*$")
@@ -122,6 +128,8 @@ class Item:
     updated: str
     status: str = DEFAULT_STATUS
     parent: str | None = None
+    order: int | None = None  # position among siblings; assigned by ItemStore.move_item
+    park_note: str = ""  # why / until when, shown while parked
     sessions: list[dict] = field(default_factory=list)  # [{"id": ..., "title": ...}]
     context: list[dict] = field(default_factory=list)  # [{"title": ..., "ref": ...}]
     body: str = ""
@@ -147,6 +155,22 @@ class Item:
 
     def session_ids(self) -> list[str]:
         return [s["id"] for s in self.sessions if s.get("id")]
+
+    @property
+    def human_status(self) -> str | None:
+        """`done` / `parked` when a person set it; None while the item is open."""
+        if self.status in HUMAN_STATUSES:
+            return self.status
+        return "parked" if self.status == "waiting" else None
+
+    @property
+    def effective_park_note(self) -> str:
+        if self.park_note:
+            return self.park_note
+        return "waiting" if self.status == "waiting" else ""
+
+    def sort_key(self) -> tuple:
+        return (self.order if self.order is not None else _UNORDERED, self.created, self.name)
 
 
 def _str_ts(value) -> str:
@@ -178,6 +202,11 @@ def parse_item(text: str) -> Item:
                 break
     extra = {k: v for k, v in fm.items() if k not in KNOWN_KEYS}
     status = str(fm.get("status") or DEFAULT_STATUS)
+    order = fm.get("order")
+    try:
+        order = int(order) if order is not None and not isinstance(order, bool) else None
+    except (TypeError, ValueError):
+        order = None
     return Item(
         id=str(fm.get("id") or ""),
         name=str(fm.get("name") or ""),
@@ -185,6 +214,8 @@ def parse_item(text: str) -> Item:
         updated=_str_ts(fm.get("updated")),
         status=status,
         parent=str(fm["parent"]) if fm.get("parent") else None,
+        order=order,
+        park_note=str(fm.get("park_note") or ""),
         sessions=_clean_pairs(fm.get("sessions"), "id", "title"),
         context=_clean_pairs(fm.get("context"), "title", "ref"),
         body=body,
@@ -202,6 +233,10 @@ def render_item(item: Item) -> str:
     }
     if item.parent:
         fm["parent"] = item.parent
+    if item.order is not None:
+        fm["order"] = item.order
+    if item.park_note:
+        fm["park_note"] = item.park_note
     fm["sessions"] = [{"id": s["id"], "title": s.get("title", "")} for s in item.sessions]
     if item.context:
         fm["context"] = [{"title": c.get("title", ""), "ref": c.get("ref", "")} for c in item.context]
@@ -276,6 +311,7 @@ class ItemStore:
                 item = self.load(path)
                 if item is not None:
                     items.append(item)
+        items.sort(key=Item.sort_key)  # sibling order is `order`, then creation time
         return items
 
     def load(self, path: Path) -> Item | None:
@@ -298,6 +334,12 @@ class ItemStore:
     def children(self, parent_id: str, items: list[Item] | None = None) -> list[Item]:
         items = self.list_items() if items is None else items
         return [i for i in items if i.parent == parent_id]
+
+    def siblings(self, parent: str | None, area: str, items: list[Item]) -> list[Item]:
+        """Items that share a container: a parent, or the top level of an Area."""
+        if parent:
+            return [i for i in items if i.parent == parent]
+        return [i for i in items if not i.parent and i.area == area]
 
     def descendants(self, item_id: str, items: list[Item] | None = None) -> list[Item]:
         items = self.list_items() if items is None else items
@@ -353,6 +395,8 @@ class ItemStore:
         )
         if notes.strip():
             item.notes = notes
+        if item.human_status is None:
+            item.status = "idea"  # open items start as ideas; save() re-derives once sessions arrive
         item.path = self._unique_path(area, name)
         self._write(item)
         return item
@@ -362,25 +406,112 @@ class ItemStore:
             raise ValueError("item has no path; use create()")
         if item.status not in STATUSES:
             raise ValueError(f"unknown status {item.status!r}")
+        if item.human_status is None:
+            item.status = "active" if item.sessions else "idea"  # open: snapshot the derivation
         item.updated = self.clock()
         self._write(item)
         return item
 
-    def move(self, item: Item, area: str) -> Item:
+    def set_human_status(self, item: Item, status: str | None, park_note: str | None = None) -> Item:
+        """`done`, `parked` (optionally with a note) or None/"open" to hand the item back to derivation."""
+        if status in (None, "", "open", "idea", "active"):
+            item.status = "idea"
+            item.park_note = ""
+        elif status == "waiting":  # legacy spelling
+            item.status = "parked"
+            item.park_note = (park_note or "waiting").strip()
+        elif status in HUMAN_STATUSES:
+            item.status = status
+            item.park_note = (park_note or "").strip() if status == "parked" else ""
+        else:
+            raise ValueError("status must be done, parked or open")
+        return self.save(item)
+
+    def _relocate(self, item: Item, area: str) -> None:
+        """Move the file into another Area directory without saving."""
         area = self.create_area(area)
         if item.path is None:
             raise ValueError("item has no path")
         if item.area == area:
-            return item
+            return
         new_path = self._unique_path(area, item.path.stem)
         os.replace(item.path, new_path)
         item.path = new_path
         item.area = area
+
+    def move(self, item: Item, area: str) -> Item:
+        if item.area == self._check_area_name(area):
+            return item
+        self._relocate(item, area)
         return self.save(item)
+
+    def move_item(
+        self,
+        item: Item,
+        *,
+        parent: str | None = None,
+        area: str | None = None,
+        before: str | None = None,
+        after: str | None = None,
+    ) -> Item:
+        """Change the one thing the canvas edits: where an item sits in the tree.
+
+        `parent` (or None for the top level of `area`, defaulting to the item's
+        own Area), optionally placed `before`/`after` a sibling; otherwise last.
+        The file moves into the container's Area directory and every sibling's
+        `order` is renumbered 0..n-1 (only files whose order changed are written).
+        """
+        items = self.list_items()
+        by_id = {i.id: i for i in items}
+        if parent:
+            if parent == item.id or parent not in by_id:
+                raise ValueError("invalid parent")
+            if parent in {d.id for d in self.descendants(item.id, items)}:
+                raise ValueError("parent would create a cycle")
+            target_area = by_id[parent].area
+        else:
+            target_area = self._check_area_name(area) if area else item.area
+        item.parent = parent or None
+        self._relocate(item, target_area)
+        sibs = [i for i in self.siblings(item.parent, target_area, items) if i.id != item.id]
+        pos = len(sibs)
+        anchor = before or after
+        if anchor:
+            for idx, sib in enumerate(sibs):
+                if sib.id == anchor:
+                    pos = idx if before else idx + 1
+                    break
+        sibs.insert(pos, item)
+        saved_self = False
+        for n, sib in enumerate(sibs):
+            if sib.order != n or sib is item:
+                sib.order = n
+                self.save(sib)
+                saved_self = saved_self or sib is item
+        if not saved_self:
+            self.save(item)
+        return item
 
     def delete(self, item: Item) -> None:
         if item.path and item.path.exists():
             item.path.unlink()
+
+    def delete_tree(self, item: Item, items: list[Item] | None = None) -> list[Item]:
+        """Delete an item together with every descendant (the UI confirms first)."""
+        items = self.list_items() if items is None else items
+        gone = [item, *self.descendants(item.id, items)]
+        for it in gone:
+            self.delete(it)
+        return gone
+
+    def detach_session_everywhere(self, session_id: str, items: list[Item] | None = None, except_id: str | None = None) -> list[Item]:
+        """A session belongs to at most one item: remove it from every other one."""
+        items = self.list_items() if items is None else items
+        changed = []
+        for it in items:
+            if it.id != except_id and session_id in it.session_ids():
+                changed.append(self.detach_session(it, session_id))
+        return changed
 
     def attach_session(self, item: Item, session_id: str, title: str = "") -> Item:
         session_id = session_id.strip()

@@ -23,7 +23,7 @@ import markdown as md
 from . import __version__
 from .config import Config
 from .gitinfo import Worktree, match_cwd, repo_snapshot
-from .items import STATUSES, Item, ItemStore
+from .items import HUMAN_STATUSES, STATUSES, Item, ItemStore
 from .runtime import NEEDS_YOU, UNKNOWN, RuntimeStore, aggregate_attention, effective_state, is_live, iso, utc_now
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -189,7 +189,11 @@ class App:
         return {
             "id": item.id,
             "name": item.name,
-            "status": item.status,
+            "status": item.status,  # replaced by the derived lifecycle in annotate_lifecycles()
+            "human_status": item.human_status,
+            "park_note": item.effective_park_note,
+            "lifecycle": None,
+            "order": item.order,
             "area": item.area,
             "parent": item.parent,
             "created": item.created,
@@ -201,9 +205,60 @@ class App:
             "children": [c.id for c in snap.items if c.parent == item.id],
         }
 
-    def overview(self) -> dict:
+    @staticmethod
+    def annotate_lifecycles(summaries: dict[str, dict]) -> None:
+        """Derive idea/active for open items: nothing attached -> idea; a session,
+        or a child that is active or done -> active. done/parked come from the person."""
+        memo: dict[str, str] = {}
+
+        def lifecycle(iid: str, seen: frozenset) -> str:
+            if iid in memo:
+                return memo[iid]
+            s = summaries[iid]
+            if s["human_status"]:
+                result = s["human_status"]
+            elif s["sessions"]:
+                result = "active"
+            elif any(
+                c in summaries and c not in seen and lifecycle(c, seen | {iid}) in ("active", "done")
+                for c in s["children"]
+            ):
+                result = "active"
+            else:
+                result = "idea"
+            memo[iid] = result
+            return result
+
+        for iid, s in summaries.items():
+            s["lifecycle"] = s["status"] = lifecycle(iid, frozenset())
+
+    def sessions_view(self, snap: Snapshot, include_all: bool = False) -> list[dict]:
+        """Every session the UI should list: observed by the hook inside the repo
+        (or anywhere with include_all) plus anything attached to an item."""
+        attached: dict[str, tuple[str, str]] = {}
+        for item in snap.items:
+            for s in item.sessions:
+                if s.get("id"):
+                    attached.setdefault(s["id"], (item.id, s.get("title") or ""))
+        out: dict[str, dict] = {}
+        for rec in self.runtime.list():
+            sid = rec["session_id"]
+            title = attached[sid][1] if sid in attached else ""
+            view = self.session_view({"id": sid, "title": title}, snap)
+            if not (view["in_repo"] or include_all or sid in attached):
+                continue
+            out[sid] = view
+        for sid, (iid, title) in attached.items():
+            if sid not in out:
+                out[sid] = self.session_view({"id": sid, "title": title}, snap)
+        for sid, view in out.items():
+            view["item"] = attached[sid][0] if sid in attached else None
+        return sorted(out.values(), key=lambda v: v.get("updated_at") or "", reverse=True)
+
+    def overview(self, include_all: bool = False) -> dict:
         snap = self.snapshot()
         summaries = {i.id: self.item_summary(i, snap) for i in snap.items}
+        self.annotate_lifecycles(summaries)
 
         def rollup_states(item_id: str, seen: set[str]) -> list[str]:
             if item_id in seen:
@@ -225,7 +280,9 @@ class App:
             "data_dir": str(self.config.data_dir),
             "areas": [{"name": a, "count": sum(1 for i in snap.items if i.area == a)} for a in self.items.areas()],
             "statuses": list(STATUSES),
+            "human_statuses": list(HUMAN_STATUSES),
             "items": list(summaries.values()),
+            "sessions": self.sessions_view(snap, include_all),
         }
 
     def item_detail(self, item_id: str) -> dict:
@@ -233,7 +290,9 @@ class App:
         item = snap.by_id.get(item_id)
         if item is None:
             raise ApiError(404, "item not found")
-        detail = self.item_summary(item, snap)
+        summaries = {i.id: self.item_summary(i, snap) for i in snap.items}
+        self.annotate_lifecycles(summaries)
+        detail = summaries[item.id]
         detail.update(
             notes=item.notes,
             notes_html=render_md(item.notes),
@@ -242,10 +301,11 @@ class App:
             context=item.context,
             extra=item.extra,
             path=str(item.path),
-            children=[self.item_summary(c, snap) for c in snap.items if c.parent == item.id],
-            parent_item=self.item_summary(snap.by_id[item.parent], snap) if item.parent in snap.by_id else None,
+            children=[summaries[c.id] for c in snap.items if c.parent == item.id],
+            parent_item=summaries[item.parent] if item.parent in summaries else None,
             areas=self.items.areas(),
             statuses=list(STATUSES),
+            human_statuses=list(HUMAN_STATUSES),
             candidates=[{"id": i.id, "name": i.name, "area": i.area} for i in snap.items if i.id != item.id],
         )
         return detail
@@ -274,14 +334,24 @@ class App:
 
     def create_item(self, body: dict) -> dict:
         try:
+            requested = str(body.get("status") or "idea")
+            parent = body.get("parent") or None
+            area = str(body.get("area") or "")
+            if parent and not area:
+                parent_item = self.items.get(str(parent))
+                area = parent_item.area if parent_item else ""
             item = self.items.create(
                 name=str(body.get("name") or ""),
-                area=str(body.get("area") or (self.items.areas() or ["Inbox"])[0]),
-                status=str(body.get("status") or "idea"),
-                parent=body.get("parent") or None,
+                area=area or (self.items.areas() or ["Inbox"])[0],
+                status=requested if requested in STATUSES else "idea",
+                parent=parent,
                 notes=str(body.get("notes") or ""),
                 context=body.get("context") or [],
             )
+            if requested == "waiting" or (requested == "parked" and body.get("park_note")):
+                self.items.set_human_status(item, requested, str(body.get("park_note") or ""))
+            # new items go last among their siblings
+            self.items.move_item(item, parent=item.parent, area=item.area)
         except ValueError as exc:
             raise ApiError(400, str(exc)) from exc
         return self.item_detail(item.id)
@@ -293,10 +363,15 @@ class App:
             if not name:
                 raise ApiError(400, "name cannot be empty")
             item.name = name
-        if "status" in body:
-            if body["status"] not in STATUSES:
-                raise ApiError(400, f"status must be one of {', '.join(STATUSES)}")
-            item.status = body["status"]
+        if "status" in body or "park_note" in body:
+            status = body.get("status", item.human_status)
+            if status not in (None, "", "open", *STATUSES):
+                raise ApiError(400, "status must be done, parked or open")
+            note = body.get("park_note", item.park_note if status in ("parked", "waiting") else None)
+            try:
+                self.items.set_human_status(item, status, note)
+            except ValueError as exc:
+                raise ApiError(400, str(exc)) from exc
         if "notes" in body:
             item.notes = str(body["notes"] or "")
         if "ai_state" in body:
@@ -326,18 +401,39 @@ class App:
             raise ApiError(400, str(exc)) from exc
         return self.item_detail(item.id)
 
-    def delete_item(self, item_id: str) -> dict:
+    def move_item(self, item_id: str, body: dict) -> dict:
+        """Re-parent / move to an Area / order among siblings -- the canvas's one structural edit."""
         item = self._get_item(item_id)
-        if self.items.children(item.id):
-            raise ApiError(409, "item has children; re-parent or delete them first")
-        self.items.delete(item)
-        return {"deleted": item_id}
+        for key in ("parent", "area", "before", "after"):
+            if body.get(key) is not None and not isinstance(body[key], str):
+                raise ApiError(400, f"{key} must be a string")
+        try:
+            self.items.move_item(
+                item,
+                parent=body.get("parent") or None,
+                area=body.get("area") or None,
+                before=body.get("before") or None,
+                after=body.get("after") or None,
+            )
+        except ValueError as exc:
+            raise ApiError(400, str(exc)) from exc
+        return self.item_detail(item.id)
+
+    def delete_item(self, item_id: str) -> dict:
+        """Delete an item and everything nested under it (the UI confirms first)."""
+        item = self._get_item(item_id)
+        gone = self.items.delete_tree(item)
+        return {"deleted": [i.id for i in gone]}
 
     def attach_session(self, item_id: str, body: dict) -> dict:
+        """Attach a session; by default it leaves whatever other item it was on (a
+        session belongs to one card), unless `exclusive` is false."""
         item = self._get_item(item_id)
         sid = str(body.get("session_id") or "").strip()
         if not _ID_RE.match(sid):
             raise ApiError(400, "session_id is required")
+        if body.get("exclusive", True):
+            self.items.detach_session_everywhere(sid, except_id=item.id)
         self.items.attach_session(item, sid, str(body.get("title") or ""))
         return self.item_detail(item.id)
 
@@ -397,6 +493,7 @@ class App:
         ("GET", r"^/api/items/([^/]+)$", "item_detail"),
         ("PATCH", r"^/api/items/([^/]+)$", "update_item"),
         ("DELETE", r"^/api/items/([^/]+)$", "delete_item"),
+        ("POST", r"^/api/items/([^/]+)/move$", "move_item"),
         ("POST", r"^/api/items/([^/]+)/sessions$", "attach_session"),
         ("PATCH", r"^/api/items/([^/]+)/sessions/([^/]+)$", "update_session"),
         ("DELETE", r"^/api/items/([^/]+)/sessions/([^/]+)$", "detach_session"),
@@ -418,6 +515,8 @@ class App:
                 return 200, {"areas": self.items.areas()}
             if name == "recent_sessions":
                 return 200, self.recent_sessions(include_all=query.get("all", ["0"])[0] in ("1", "true"))
+            if name == "overview":
+                return 200, self.overview(include_all=query.get("all", ["0"])[0] in ("1", "true"))
             handler = getattr(self, name)
             if method in ("POST", "PATCH"):
                 args.append(body or {})

@@ -44,7 +44,8 @@ def test_end_to_end_flow(server):
 
     assert call("POST", "/api/areas", {"name": "Ranking"})[0] == 200
     status, parent = call("POST", "/api/items", {"name": "Long-term objective", "area": "Ranking", "status": "active", "notes": "# plan\n\nstep one"})
-    assert status == 201 and parent["status"] == "active" and "<h1>plan</h1>" in parent["notes_html"]
+    # `status` is derived: nothing attached yet, so the item is an idea whatever the request said
+    assert status == 201 and parent["status"] == "idea" and parent["human_status"] is None and "<h1>plan</h1>" in parent["notes_html"]
     status, child = call("POST", "/api/items", {"name": "Prototype", "area": "Ranking", "parent": parent["id"]})
     assert status == 201 and child["parent"] == parent["id"]
     status, detail = call("GET", f"/api/items/{parent['id']}")
@@ -120,12 +121,13 @@ def test_end_to_end_flow(server):
     assert "s-unknown" not in (cfg.items_dir / "Ranking" / "long-term-objective.md").read_text()
 
     # guard rails
-    assert call("DELETE", f"/api/items/{parent['id']}")[0] == 409  # has children
     assert call("PATCH", f"/api/items/{parent['id']}", {"parent": child["id"]})[0] == 400  # cycle
     assert call("PATCH", f"/api/items/{parent['id']}", {"status": "blocked"})[0] == 400
     assert call("GET", "/api/items/nope")[0] == 404
-    assert call("DELETE", f"/api/items/{child['id']}")[0] == 200
-    assert call("DELETE", f"/api/items/{parent['id']}")[0] == 200
+    # delete cascades: the parent takes its child with it (the UI confirms first)
+    status, res = call("DELETE", f"/api/items/{parent['id']}")
+    assert status == 200 and set(res["deleted"]) == {parent["id"], child["id"]}
+    assert call("GET", f"/api/items/{child['id']}")[0] == 404
 
 
 def test_delete_area_removes_directory_and_items(server):
@@ -133,16 +135,17 @@ def test_delete_area_removes_directory_and_items(server):
     assert call("POST", "/api/areas", {"name": "Client Work"})[0] == 200
     status, top = call("POST", "/api/items", {"name": "Top", "area": "Client Work"})
     status, kid = call("POST", "/api/items", {"name": "Kid", "area": "Client Work", "parent": top["id"]})
-    status, elsewhere = call("POST", "/api/items", {"name": "Elsewhere", "area": "Other", "parent": kid["id"]})
-    assert status == 201 and (cfg.items_dir / "Client Work" / "kid.md").exists()
+    assert call("POST", "/api/areas", {"name": "Other"})[0] == 200
+    # a child lives in its parent's Area, whatever `area` says: the tree is what matters
+    status, grandkid = call("POST", "/api/items", {"name": "Grandkid", "area": "Other", "parent": kid["id"]})
+    assert status == 201 and grandkid["area"] == "Client Work" and (cfg.items_dir / "Client Work" / "kid.md").exists()
 
     status, res = call("DELETE", "/api/areas/Client%20Work")  # names are URL-encoded in the path
     assert status == 200 and res["deleted"] == "Client Work" and res["areas"] == ["Other"]
-    assert sorted(res["items_deleted"]) == sorted([top["id"], kid["id"]]) and res["items_detached"] == [elsewhere["id"]]
+    assert sorted(res["items_deleted"]) == sorted([top["id"], kid["id"], grandkid["id"]]) and res["items_detached"] == []
     assert not (cfg.items_dir / "Client Work").exists()
     assert call("GET", f"/api/items/{top['id']}")[0] == 404
-    status, detail = call("GET", f"/api/items/{elsewhere['id']}")
-    assert status == 200 and detail["parent"] is None and detail["parent_item"] is None
+    assert call("GET", f"/api/items/{grandkid['id']}")[0] == 404
     status, ov = call("GET", "/api/overview")
     assert [a["name"] for a in ov["areas"]] == ["Other"]
 
@@ -155,7 +158,7 @@ def test_static_shell_and_bind_guard(server):
     with urllib.request.urlopen(server["url"] + "/", timeout=10) as res:
         assert res.status == 200 and b"<title>folio</title>" in res.read()
     with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
-        assert res.status == 200 and b"renderDashboard" in res.read()
+        assert res.status == 200 and b"renderRail" in res.read()
     with urllib.request.urlopen(server["url"] + "/item/abc", timeout=10) as res:  # SPA fallback
         assert b"<title>folio</title>" in res.read()
     assert parse_bind("127.0.0.1:4317") == ("127.0.0.1", 4317)

@@ -104,7 +104,7 @@ Area  (a directory)
 | **Item** | one piece of work; the durable unit | one `.md` file with YAML frontmatter |
 | **Child item** | a sub-problem or spin-off | an Item whose frontmatter has `parent: <id>` |
 | **Session** | a Claude Code session attached to an Item | an id + title in the Item's frontmatter |
-| **Status** | *human* state: idea / active / waiting / done / parked | frontmatter `status:` |
+| **Status** | *derived* idea / active, or the two states a person sets: done / parked (+ optional `park_note`) | frontmatter `status:` |
 | **Runtime state** | *machine* state: working / needs you / ready / ended / inactive | derived from the hook, never written to Markdown |
 
 Status and runtime state are shown side by side and **never merged** — "I consider
@@ -196,7 +196,9 @@ id: k7m2p9xw                       # stable, opaque; filename is just a readable
 name: Better long-term ranking objective
 created: '2026-08-29T18:30:00-07:00'
 updated: '2026-08-29T19:02:11-07:00'
-status: active                     # idea | active | waiting | done | parked
+status: active                     # done | parked are yours; idea | active are derived and re-snapshotted on save
+order: 2                           # position among siblings (assigned when you drag; absent = by created)
+park_note: after prototype numbers # optional, shown while parked (legacy `waiting` reads as parked)
 parent: 3fq8ztra                   # optional
 sessions:
 - id: 1f3a9c2e-7b41-4d6e-9a0f-1b2c3d4e5f60
@@ -271,32 +273,40 @@ To test without touching user-level settings, install into a project:
 
 ## Using the UI
 
-Vanilla JS, no build step, no framework. The page re-renders every 5 seconds so
-runtime state stays current without a reload (paused while you are typing or
-editing notes).
+One screen, three regions. Nothing on it is positioned by you; you only change
+*relations*, and the app lays everything out.
 
-* **Dashboard** – *Needs you* / *Working* strips across all Areas, then each Area
-  in columns Active · Waiting · Ideas · Parked · Recently done. Cards show attached
-  session counts and child rows; a child's attention bubbles up to the parent card.
-  Type into "Quick idea in …" and press Enter to create an idea in one step.
-  **+ New area** creates a directory; **Delete area** (per Area header, after a
-  confirm) removes the directory with every item in it. Items in *other* Areas
-  whose parent lived there are kept and become top-level.
-* **Item** – rename, status/area/parent selects, attached Claude sessions with live
-  state · last update · worktree · branch · cwd, **Resume / Attach** (shows and copies
-  the right command: `claude attach <short-id>` for a *running background* session,
-  otherwise `cd <cwd> && claude --resume <id>`, plus stop-then-resume and
-  `--fork-session` alternatives), **Attach Claude session** (pick from recently
-  observed sessions inside the configured repo, or paste an id), child cards with
-  quick-add, AI state, editable Notes (Markdown), context refs (URLs are links,
-  paths get a Copy button).
-* **Sessions** – everything the hook has observed for the configured repo, with
-  attach-to-item and copy-resume actions.
-* **+ New item** – the full form, when the dashboard's one-line quick-add is not
-  enough (name, area, status, parent).
+* **Sessions rail (left)** – everything the hook has observed for the configured
+  repo, grouped by state (*Needs you · Working · Ready · Ended*), filterable to
+  *Unattached* (your inbox) or *Needs you*; tick *other repos* to include
+  sessions elsewhere. Drag a row onto any card to attach it (a session lives on
+  one card; dropping it on another card moves it). Click a row to fly to its card.
+* **Canvas (centre)** – Areas side by side; each lays its cards into stable
+  columns. Children render *inside* their parent along a tree rail, all the way
+  down — a card just gets bigger. The chevron chip collapses a subtree (it turns
+  into a stacked deck with a composition strip); **Collapse all** does the whole
+  workspace. Lifecycle is a small glyph before the title; the one loud thing is
+  **attention**: a card whose session needs you glows amber, Area headers and the
+  top-bar pill carry counts, and **J** walks you through them.
+  Drag a card onto another card's body to make it a child; onto a card's top or
+  bottom edge to place it before/after as a sibling; onto an Area's empty space
+  to make it top-level there (that is also how you move a child out). Drag a
+  session chip off a card onto empty canvas (or back onto the rail) to detach it.
+  Structural changes toast with **Undo**. Scroll pans, ⌘/ctrl‑scroll zooms, **F** fits.
+* **Inspector (right, on select)** – rename, derived state with **Mark done** /
+  **Park** (with a note), attached sessions with live state and **Open / Resume**
+  (shows and copies the right command: `claude attach <short-id>` for a running
+  background session, otherwise `cd <cwd> && claude --resume <id>`, plus
+  alternatives), children with quick-add, **↑ Move out**, Notes (Markdown),
+  context refs, AI state when present, and **Delete** (cascades to everything
+  nested, after a confirm).
+* **+ Idea** adds to the Inbox; **+** on an Area header adds there; **+ Area**
+  creates a directory. Area headers offer **Delete area** on hover.
 
-Item workflow status (`active`, `waiting`, …) is human state; *Needs you* /
-*Working* is ephemeral runtime state. They are shown side by side, never merged.
+Deep links: `/#card=<id>`. Collapsed state and the camera are remembered per browser.
+
+Item lifecycle (`idea`, `active`, `done`, `parked`) is what the item *is*; *Needs
+you* / *Working* is ephemeral runtime state. They are shown side by side, never merged.
 
 ## Running on a devbox behind SSH port forwarding
 
@@ -371,6 +381,9 @@ is not permanently married to Claude Code.
   the Markdown.
 * `folio/static/` – the whole UI: one HTML file, one CSS file, one JS file.
 * No cache/index: every request re-reads the item files (fine for hundreds).
+* `POST /api/items/<id>/move` is the canvas's one structural edit (parent / area / before / after);
+  it renumbers sibling `order`. `DELETE /api/items/<id>` cascades. Attaching a session
+  detaches it from any other item unless `exclusive: false`.
 
 ## Non-goals
 
@@ -385,7 +398,7 @@ multiple users or auth; or replace your issue tracker for team-visible work.
 * Runtime state depends on the hook: a prose question looks like an ordinary turn
   end until Claude's `idle_prompt`; a killed session emits no `SessionEnd`, so it is
   shown as *inactive* only via pid/staleness heuristics.
-* "Recently done" shows the 5 most recently updated done items per Area.
+* Every card is expanded by default; deep trees may want to start collapsed (not yet).
 * Resume is command-copy only (no embedded terminal); notes are a plain textarea;
   no automatic AI-state generation; no transcript viewer; no auth (loopback only).
 * Renaming an Area = renaming its directory; renaming an Item keeps its filename.

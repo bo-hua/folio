@@ -27,12 +27,12 @@ def test_create_read_update_round_trip_preserves_notes_and_unknown_keys(store, c
     assert loaded.area == "Ranking"
 
     clock.value = "2026-08-29T11:00:00-07:00"
-    loaded.status = "active"
+    loaded.status = "done"  # a human state sticks; open items are re-derived on save (see test_canvas_model)
     loaded.notes = loaded.notes + "\n\nappended line"
     store.save(loaded)
 
     again = store.get(item.id)
-    assert again.status == "active"
+    assert again.status == "done" and again.human_status == "done"
     assert again.notes == notes + "\n\nappended line"
     assert again.ai_state == "Current belief: pairwise loss wins."
     assert again.extra == {"priority": "high"}

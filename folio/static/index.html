@@ -4,11 +4,53 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>folio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<div id="app"><p class="muted" style="padding:2rem">Loading…</p></div>
-<div id="toast" hidden></div>
+<div class="app">
+  <header class="topbar">
+    <span class="brand">folio</span>
+    <span class="summary" id="summary">Loading…</span>
+    <span class="stale" id="stale" hidden title="This process is older than folio's code on disk. Stop it and run `folio serve` again.">server is running older code — restart it</span>
+    <button class="tb-btn" id="attnPill" title="Jump to the next card that needs you (J)"></button>
+    <button class="tb-btn" id="collapseAll" title="Collapse or expand every card that has children">Collapse all</button>
+    <span class="repo" id="repo" title="Configured repository"></span>
+    <button class="tb-btn" id="newAreaBtn" title="Create an Area (a directory)">+ Area</button>
+    <button class="tb-btn primary" id="newIdeaBtn" title="Quick idea (N)">+ Idea</button>
+  </header>
+
+  <aside class="rail" aria-label="Sessions">
+    <div class="rail-head"><h1>Sessions</h1><span class="mono muted" id="railCount"></span></div>
+    <div class="rail-filters">
+      <button class="chip-btn on" data-f="all">All</button>
+      <button class="chip-btn" data-f="unattached">Unattached</button>
+      <button class="chip-btn" data-f="attention">Needs you</button>
+      <label class="chip-btn toggle" title="Also list sessions running outside the configured repository"><input type="checkbox" id="allRepos"> other repos</label>
+    </div>
+    <div class="rail-body" id="rail"></div>
+    <div class="rail-foot"><span>Drag a session onto a card to attach it; onto empty canvas to detach.</span><span class="k"><kbd>J</kbd> next</span></div>
+  </aside>
+
+  <main class="stage" id="stage">
+    <div class="world" id="world"></div>
+    <div class="legend" aria-hidden="true">
+      <span><i class="glyph idea"></i>idea</span><span><i class="glyph active"></i>active</span><span><i class="glyph done"></i>done</span><span><i class="glyph parked"></i>parked</span>
+      <i class="sep"></i>
+      <span><i class="dot needs_you"></i>needs you</span><span><i class="dot working"></i>working</span><span><i class="dot ready"></i>ready</span><span><i class="dot ended"></i>ended</span>
+    </div>
+    <div class="zoomctl">
+      <button id="zoomOut" title="Zoom out">−</button>
+      <span class="pct" id="zoomPct">100%</span>
+      <button id="zoomIn" title="Zoom in">+</button>
+      <button id="zoomFit" title="Fit everything (F)" style="font-size:11px;width:auto;padding:0 8px">Fit</button>
+    </div>
+    <div class="hintbar" id="hint"></div>
+    <aside class="inspector" id="inspector" aria-label="Card details"></aside>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
 <script src="/static/app.js"></script>
 </body>
 </html>
