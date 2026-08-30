@@ -34,8 +34,10 @@ def default_settings_path() -> Path:
 
 def hook_command(data_dir: Path | None = None) -> str:
     """Absolute command for the hook, using this very interpreter's venv."""
-    exe = Path(sys.executable).resolve().parent / "folio"
-    cmd = f"{exe} hook"
+    # Do NOT resolve symlinks: in a uv/venv, sys.executable is .venv/bin/python
+    # (a symlink to the base interpreter) and we want the venv's console script.
+    exe = Path(sys.executable).parent / "folio"
+    cmd = f"{exe} hook" if exe.exists() else f"{sys.executable} -m folio.cli hook"
     if data_dir is not None and Path(data_dir).resolve() != DEFAULT_DATA_DIR.resolve():
         cmd += f" --data-dir {Path(data_dir).resolve()}"
     return cmd

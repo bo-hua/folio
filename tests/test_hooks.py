@@ -43,7 +43,8 @@ def test_write_settings_backs_up(tmp_path):
 
 def test_hook_command_points_at_this_venv(tmp_path):
     cmd = hooks.hook_command(tmp_path)
-    assert cmd.startswith(str(Path(sys.executable).resolve().parent / "folio"))
+    assert cmd.startswith(str(Path(sys.executable).parent / "folio")) or cmd.startswith(f"{sys.executable} -m folio.cli hook")
+    assert "miniforge" not in cmd  # never the resolved base interpreter
     assert f"--data-dir {tmp_path.resolve()}" in cmd
     assert "--data-dir" not in hooks.hook_command(None)
 

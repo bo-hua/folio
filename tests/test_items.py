@@ -123,13 +123,17 @@ def test_slug_collision_and_move(store):
 
 
 def test_sections():
-    body = "intro\n\n## AI state\n\nstate\n\n## Notes\n\nhello\n```\n## fenced\n```\n"
+    body = "intro\n\n## AI state\n\nstate\n\n## Notes\n\nhello\n```\n## fenced\n```\n\n## Goal\n\nheadings inside notes stay in notes\n"
     pre, secs = split_sections(body)
     assert pre.strip() == "intro"
     assert [h for h, _ in secs] == ["AI state", "Notes"]
-    assert get_section(body, "notes") == "hello\n```\n## fenced\n```"
+    assert get_section(body, "notes") == "hello\n```\n## fenced\n```\n\n## Goal\n\nheadings inside notes stay in notes"
     new = set_section(body, "Notes", "replaced")
     assert get_section(new, "Notes") == "replaced" and get_section(new, "AI state") == "state"
+    assert "## Goal" not in new  # the heading belonged to the notes content that was replaced
+    # notes that *start* with a heading round-trip intact
+    started = set_section("", "Notes", "## Goal\n\ntext")
+    assert get_section(started, "Notes") == "## Goal\n\ntext"
     assert new.startswith("intro\n")
     assert get_section(set_section("", "Notes", "x"), "Notes") == "x"
 

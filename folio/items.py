@@ -28,6 +28,7 @@ KNOWN_KEYS = ("id", "name", "created", "updated", "status", "parent", "sessions"
 _ID_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
 _FENCE_RE = re.compile(r"^(```|~~~)")
 _H2_RE = re.compile(r"^## +(.+?)\s*$")
+KNOWN_SECTIONS = ("ai state", "notes")
 
 
 def now_iso() -> str:
@@ -50,9 +51,10 @@ def slugify(name: str) -> str:
 def split_sections(body: str) -> tuple[str, list[tuple[str, str]]]:
     """Split a Markdown body into (preamble, [(h2 heading, content), ...]).
 
-    Only `## ` headings outside fenced code blocks start a section. Content is
-    kept raw so that re-joining is lossless apart from section-boundary blank
-    lines.
+    Only the *known* section headings (`## AI state`, `## Notes`) outside fenced
+    code blocks start a section; any other `## ...` heading is ordinary content
+    (people use headings inside their notes). Content is kept raw so that
+    re-joining is lossless apart from section-boundary blank lines.
     """
     preamble_lines: list[str] = []
     sections: list[tuple[str, list[str]]] = []
@@ -61,6 +63,8 @@ def split_sections(body: str) -> tuple[str, list[tuple[str, str]]]:
         if _FENCE_RE.match(line):
             in_fence = not in_fence
         m = None if in_fence else _H2_RE.match(line)
+        if m and m.group(1).strip().lower() not in KNOWN_SECTIONS:
+            m = None
         if m:
             sections.append((m.group(1), []))
         elif sections:
