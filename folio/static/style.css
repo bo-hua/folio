@@ -34,6 +34,9 @@ main { max-width: 1180px; margin: 0 auto; padding: 20px 24px 60px; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
 .panel.needs { border-left: 4px solid var(--needs); }
 .panel.working { border-left: 4px solid var(--working); }
+.panel.observed { margin: -8px 0 20px; }
+.panel.observed h3 { display: flex; align-items: baseline; gap: 6px; margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
+.obs-row { display: flex; gap: 10px; align-items: center; padding: 4px 0; border-top: 1px solid var(--line); font-size: 12.5px; }
 .area { margin-bottom: 26px; }
 .area-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
 .area-head h2 { margin: 0; font-size: 17px; }

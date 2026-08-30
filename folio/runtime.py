@@ -65,8 +65,11 @@ def transition(event: dict) -> tuple[str, str | None] | None:
     name = event.get("hook_event_name")
     if name in ("SubagentStart", "SubagentStop"):
         return WORKING, None
-    if event.get("agent_id") or event.get("agent_type"):
-        return None  # subagent-scoped event; keep main-session state
+    if event.get("agent_id"):
+        # Event emitted from inside a subagent (Task tool): keep the main session's state.
+        # NOTE: main-session events also carry `agent_type` (e.g. "claude"), so only
+        # `agent_id` identifies a subagent -- verified against Claude Code 2.1.251.
+        return None
     if name == "SessionStart":
         return READY, None
     if name in _WORKING_EVENTS:
@@ -106,6 +109,11 @@ def effective_state(record: dict, now: datetime | None = None, alive: Callable[[
     """Stored state, downgraded to INACTIVE when the process is gone or stale."""
     now = now or utc_now()
     state = record.get("state") or UNKNOWN
+    if state == UNKNOWN and record.get("last_event"):
+        # Records written by an older hook that skipped the event: derive from the event name.
+        derived = transition({"hook_event_name": record["last_event"]})
+        if derived:
+            state = derived[0]
     if state == ENDED:
         return ENDED
     pid = record.get("pid")

@@ -28,7 +28,10 @@ def test_transition_table():
     assert transition(ev("Stop")) == (READY, None)
     assert transition(ev("SessionEnd", reason="exit")) == (ENDED, None)
     assert transition(ev("SubagentStart", agent_id="a1", agent_type="Explore")) == (WORKING, None)
-    assert transition(ev("PreToolUse", agent_id="a1")) is None  # inside a subagent: keep main state
+    assert transition(ev("PreToolUse", agent_id="a1", agent_type="Explore")) is None  # inside a subagent: keep main state
+    # main-session events carry agent_type (e.g. "claude") but no agent_id -- they must still count
+    assert transition(ev("PreToolUse", agent_type="claude")) == (WORKING, None)
+    assert transition(ev("SessionStart", agent_type="claude")) == (READY, None)
     assert transition(ev("SomethingNew")) is None
 
 
@@ -75,6 +78,9 @@ def test_effective_state_staleness_and_pid():
     assert effective_state(dead, now, alive=lambda pid: False) == INACTIVE
     assert effective_state(dead, now, alive=lambda pid: True) == NEEDS_YOU
     assert effective_state({"state": ENDED, "updated_at": "2026-08-29T17:59:00Z"}, now) == ENDED
+    # legacy record whose state was never set: fall back to the last event name
+    assert effective_state({"state": "unknown", "last_event": "PreToolUse", "updated_at": "2026-08-29T17:59:00Z"}, now) == WORKING
+    assert effective_state({"state": "unknown", "last_event": "SessionEnd", "updated_at": "2026-08-29T17:59:00Z"}, now) == ENDED
 
 
 def test_aggregate_attention_across_sessions():

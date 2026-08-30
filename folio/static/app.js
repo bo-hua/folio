@@ -106,7 +106,7 @@ function showError(err) {
 
 // ------------------------------------------------------------------ dashboard
 async function renderDashboard() {
-  const ov = await api('GET', '/api/overview');
+  const [ov, observed] = await Promise.all([api('GET', '/api/overview'), api('GET', '/api/sessions').catch(() => ({ sessions: [] }))]);
   const byId = Object.fromEntries(ov.items.map(i => [i.id, i]));
   const top = ov.items.filter(i => !i.parent || !byId[i.parent]);
   const needs = ov.items.filter(i => i.attention.level === 'needs_you');
@@ -118,8 +118,21 @@ async function renderDashboard() {
       : el('div', { class: 'muted small' }, cls === 'needs' ? 'Nothing is waiting on you.' : 'No agent threads running.'));
 
   const areas = ov.areas.map(a => areaSection(a, top.filter(i => i.area === a.name), byId));
+  const live = observed.sessions.filter(s => s.state !== 'ended' && s.state !== 'inactive');
+  const unattached = live.filter(s => !s.attached_to.length);
+  const observedPanel = el('div', { class: 'panel observed' },
+    el('h3', {}, 'Observed Claude sessions in this repo ', el('span', { class: 'muted' }, `(${live.length} live · ${unattached.length} unattached)`),
+      el('span', { class: 'grow' }), el('a', { href: '#/sessions', class: 'small' }, 'all sessions →')),
+    live.length ? el('div', { class: 'obs-rows' }, live.slice(0, 6).map(s => el('div', { class: 'obs-row' },
+      el('span', { class: 'mono' }, s.short_id), stateBadge(s.state, s.attention),
+      el('span', { class: 'mono muted small' }, s.branch ? `[${s.branch}]` : '', ' ', shortPath(s.cwd)),
+      el('span', { class: 'grow' }),
+      s.attached_to.length ? el('span', { class: 'small' }, 'on ', s.attached_to.map((a, i) => [i ? ', ' : '', el('a', { href: `#/item/${a.id}` }, a.name)]))
+        : el('a', { href: '#/sessions', class: 'small' }, 'attach to an item'))))
+      : el('div', { class: 'muted small' }, 'No live sessions observed yet. New Claude Code sessions started inside the configured repo will appear here once the hook is installed (folio hooks install); sessions started before the install must be restarted.'));
   page(ov,
     el('div', { class: 'attention' }, attentionPanel('needs', 'Needs you', needs), attentionPanel('working', 'Working', working)),
+    observedPanel,
     ...areas,
     el('div', { class: 'row', style: 'margin-top:8px' },
       el('button', { onclick: async () => {
