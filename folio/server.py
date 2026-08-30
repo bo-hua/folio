@@ -13,7 +13,7 @@ import sys
 import threading
 import traceback
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -28,6 +28,17 @@ from .runtime import NEEDS_YOU, UNKNOWN, RuntimeStore, aggregate_attention, effe
 
 STATIC_DIR = Path(__file__).parent / "static"
 _ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+
+def code_mtime() -> float:
+    """Newest mtime among folio's own Python sources (0.0 if none are readable)."""
+    times = []
+    for path in Path(__file__).parent.rglob("*.py"):
+        try:
+            times.append(path.stat().st_mtime)
+        except OSError:
+            pass
+    return max(times, default=0.0)
 
 
 class ApiError(Exception):
@@ -103,6 +114,24 @@ class App:
         self.items = ItemStore(config.items_dir)
         self.runtime = RuntimeStore(config.runtime_dir)
         self.lock = threading.Lock()
+        self.started_at = utc_now()
+
+    def server_info(self) -> dict:
+        """Report whether this process is older than folio's code on disk.
+
+        The UI is served straight from disk on every request, but the running
+        process keeps the Python it started with. Edit folio and forget to
+        restart and the browser gets buttons whose endpoints this process has
+        never heard of -- they come back 404 "no such endpoint" and appear to
+        do nothing. Surface the mismatch instead.
+        """
+        changed = code_mtime()
+        return {
+            "version": __version__,
+            "started": iso(self.started_at),
+            "code_changed": iso(datetime.fromtimestamp(changed, timezone.utc)) if changed else None,
+            "stale": changed > self.started_at.timestamp(),
+        }
 
     # ------------------------------------------------------------------ views
     def snapshot(self) -> Snapshot:
@@ -191,6 +220,7 @@ class App:
         return {
             "generated_at": iso(snap.now),
             "version": __version__,
+            "server": self.server_info(),
             "repo": snap.repo,
             "data_dir": str(self.config.data_dir),
             "areas": [{"name": a, "count": sum(1 for i in snap.items if i.area == a)} for a in self.items.areas()],
