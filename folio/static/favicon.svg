@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="folio">
+  <title>folio</title>
+  <defs>
+    <linearGradient id="tile" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="64">
+      <stop offset="0" stop-color="#1E8F8A"/>
+      <stop offset="1" stop-color="#145E5C"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#tile)"/>
+  <!-- a card, with a child card nested inside it: the unit of work, not the session -->
+  <rect x="12.5" y="14" width="39" height="36" rx="6.5" fill="#FFFFFF"/>
+  <rect x="19.5" y="21" width="16" height="4" rx="2" fill="#145E5C" opacity=".38"/>
+  <rect x="19.5" y="29.5" width="25" height="14" rx="4" fill="url(#tile)"/>
+  <!-- the "needs you" badge -->
+  <circle cx="49.5" cy="15.5" r="8.5" fill="url(#tile)"/>
+  <circle cx="49.5" cy="15.5" r="5.8" fill="#E08A26"/>
+</svg>

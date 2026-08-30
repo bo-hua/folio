@@ -379,7 +379,7 @@ is not permanently married to Claude Code.
 * `folio/server.py` – JSON API + static files. `resume_command()` is a plain
   string on purpose; a richer resume mechanism can replace it without touching
   the Markdown.
-* `folio/static/` – the whole UI: one HTML file, one CSS file, one JS file.
+* `folio/static/` – the whole UI: one HTML file, one CSS file, one JS file, one SVG favicon.
 * No cache/index: every request re-reads the item files (fine for hundreds).
 * `POST /api/items/<id>/move` is the canvas's one structural edit (parent / area / before / after);
   it renumbers sibling `order`. `DELETE /api/items/<id>` cascades. Attaching a session

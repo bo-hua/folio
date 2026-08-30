@@ -159,6 +159,9 @@ def test_static_shell_and_bind_guard(server):
         assert res.status == 200 and b"<title>folio</title>" in res.read()
     with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
         assert res.status == 200 and b"renderRail" in res.read()
+    with urllib.request.urlopen(server["url"] + "/static/favicon.svg", timeout=10) as res:
+        assert res.status == 200 and res.headers["Content-Type"] == "image/svg+xml"
+        assert b"<svg" in res.read()
     with urllib.request.urlopen(server["url"] + "/item/abc", timeout=10) as res:  # SPA fallback
         assert b"<title>folio</title>" in res.read()
     assert parse_bind("127.0.0.1:4317") == ("127.0.0.1", 4317)
