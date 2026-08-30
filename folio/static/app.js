@@ -59,7 +59,8 @@ function timeAgo(iso) {
   return `${Math.round(s / 86400)}d ago`;
 }
 
-function plural(n, word) { return `${n} ${word}${n === 1 ? '' : 's'}`; }
+const PLURALS = { child: 'children' };
+function plural(n, word) { return `${n} ${n === 1 ? word : (PLURALS[word] || word + 's')}`; }
 function statusBadge(status) { return el('span', { class: `badge status-${status}` }, status); }
 function stateBadge(state, reason) {
   const label = STATE_LABEL[state] || state;
@@ -163,7 +164,7 @@ function card(item, byId) {
       item.has_ai_state ? el('span', { title: 'has AI state' }, '✦ AI state') : null,
       el('span', { title: item.updated }, `updated ${timeAgo(item.updated)}`)),
     kids.length ? el('ul', { class: 'children' }, kids.map(c => el('li', {},
-      el('span', { class: `dot ${c.attention.level || 'none'}` }), c.name, el('span', { class: 'muted' }, `· ${c.status}`)))) : null);
+      el('span', { class: `dot ${c.attention.level || 'none'}` }), el('span', { class: 'grow' }, c.name), el('span', { class: 'muted child-status' }, c.status)))) : null);
 }
 
 // ------------------------------------------------------------------ item detail
@@ -269,7 +270,7 @@ function sessionsBlock(it) {
         el('button', { onclick: () => { attachArea.replaceChildren(); attachBtn.hidden = false; } }, 'Cancel')));
   }
   return el('section', { class: 'block' },
-    el('h3', {}, 'Claude sessions', el('span', { class: 'muted small' }, plural(it.sessions.length, 'attached')), el('span', { class: 'grow' }), attachBtn),
+    el('h3', {}, 'Claude sessions', el('span', { class: 'muted small' }, `${it.sessions.length} attached`), el('span', { class: 'grow' }), attachBtn),
     table, resumeBox, el('div', { class: 'attach' }, attachArea));
 }
 
