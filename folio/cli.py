@@ -110,6 +110,9 @@ def cmd_sessions(args) -> int:
         where = s["worktree"] or s["cwd"] or "-"
         branch = f"[{s['branch']}]" if s["branch"] else ""
         print(f"{(s['updated_at'] or '-')[:19]:20} {s['short_id']:9} {s['state']:9} {where} {branch}")
+        title = s["title"] or s["auto_title"]
+        if title:
+            print(f"{'':20} {title}")
     return 0
 
 

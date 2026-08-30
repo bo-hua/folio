@@ -51,8 +51,10 @@ side by side.
   are just directories.
 * **Ephemeral (folio derives it, never stores it in your files).** A metadata-only
   Claude Code hook records each session's coarse state — *working / needs you /
-  ready / ended*. `git worktree list` supplies worktrees and branches. Both are
-  re-read on every request and joined to the Markdown by session id.
+  ready / ended*. `git worktree list` supplies worktrees and branches. Claude Code's
+  own transcript supplies each session's title and last prompt, so the rail says
+  *"long-term ranking objective"* rather than `5caf6282`. All three are re-read on
+  every request and joined to the Markdown by session id.
 * **The join is the product.** The dashboard opens with a **Needs you** strip
   across every Area, then **Working**, then your Items by status. A child item's
   attention bubbles up to its parent card, so a background session hitting a
@@ -66,8 +68,9 @@ the Item is what persists.
 The hook is a pure observer: Claude pipes it one JSON event on stdin, it records
 coarse metadata and exits 0 **without printing anything**, so it can never approve,
 deny, block, or otherwise alter a permission decision. It stores session ids,
-states, timestamps, cwd, permission mode, and a best-effort pid — **never** prompts,
-responses, tool arguments, transcripts, or code.
+states, timestamps, cwd, permission mode, a best-effort pid, and the path of
+Claude Code's transcript — **never** prompts, responses, tool arguments, transcript
+*contents*, or code.
 
 folio also never launches, steers, or kills a session. "Resume" hands you the
 correct shell command to copy. That boundary is deliberate: folio is safe to leave
@@ -232,8 +235,8 @@ never approve, deny, block or otherwise alter a permission decision.
 What is stored per session (`runtime/sessions/<id>.json`):
 `session_id`, `state` (working / needs_you / ready / ended), `attention`
 (permission / question), `last_event`, `updated_at`, `first_seen`, `cwd`,
-`permission_mode`, best-effort `pid`. **Never** prompts, responses, tool
-arguments, transcripts or code.
+`transcript_path`, `permission_mode`, best-effort `pid`. **Never** prompts,
+responses, tool arguments, transcript contents or code.
 
 State mapping (Claude Code 2.1.x hook events):
 
@@ -248,6 +251,34 @@ State mapping (Claude Code 2.1.x hook events):
 
 Events emitted from inside subagents (they carry `agent_id`) do not change the
 main session's state.
+
+### Session titles (derived, never stored)
+
+A session id tells you nothing, and naming every session by hand is work nobody
+does. Claude Code already writes a short title for each session into its own
+transcript (`~/.claude/projects/<slug>/<session-id>.jsonl`), refreshed as the
+session goes:
+
+```json
+{"aiTitle": "delete area data cleanup", "sessionId": "fced8226-…", "type": "ai-title"}
+{"lastPrompt": "merge",                 "sessionId": "fced8226-…", "type": "last-prompt"}
+```
+
+`folio/transcript.py` reads those two fields — and nothing else — on every request
+and hands them to the rail as `auto_title` and `last_prompt`. They are **never**
+written into `runtime/sessions/` or into your Markdown; the record keeps only the
+transcript's *path*, and folio can find the file by session id without it.
+
+Precedence for a session's name is **your title → Claude's title → the short id**,
+so renaming a session in the inspector still wins and still lives in the Item's
+Markdown, where you can grep it.
+
+Transcripts reach tens of megabytes, so folio reads a 256 KB tail and scans it
+backwards for the newest of each line (both are rewritten every turn), falling
+back to a whole-file scan for sessions that stopped early, and caching per
+(path, mtime, size) — a warm overview costs microseconds. Claude Code owns this
+format; if it changes, every read fails silently and sessions simply go back to
+showing their id.
 
 ### Installing the hook
 
@@ -279,8 +310,10 @@ One screen, three regions. Nothing on it is positioned by you; you only change
 * **Sessions rail (left)** – everything the hook has observed for the configured
   repo, grouped by state (*Needs you · Working · Ready · Ended*), filterable to
   *Unattached* (your inbox) or *Needs you*; tick *other repos* to include
-  sessions elsewhere. Drag a row onto any card to attach it (a session lives on
-  one card; dropping it on another card moves it). Click a row to fly to its card.
+  sessions elsewhere. Each row leads with the session's name — yours if you set
+  one, otherwise the title Claude Code gave it — over its last prompt, branch,
+  short id and age. Drag a row onto any card to attach it (a session lives on one
+  card; dropping it on another card moves it). Click a row to fly to its card.
 * **Canvas (centre)** – Areas side by side; each lays its cards into stable
   columns. Children render *inside* their parent along a tree rail, all the way
   down — a card just gets bigger. The chevron chip collapses a subtree (it turns
@@ -361,7 +394,9 @@ behaviour, parent→child derivation, real `git worktree` discovery + cwd→work
 matching (incl. symlinked paths), hook event→state parsing, metadata-only
 persistence, item-level attention aggregation, attach/detach persistence, area
 deletion (cascade + cross-area detach), the settings.json merge, the hook CLI as a
-silent observer, and an end-to-end HTTP flow against a fixture repo.
+silent observer, transcript title extraction (tail window, whole-file fallback,
+junk and lookalike lines, cache invalidation), and an end-to-end HTTP flow against
+a fixture repo.
 
 ## Architecture notes / replacing pieces later
 
@@ -374,6 +409,9 @@ is not permanently married to Claude Code.
   events to coarse states; everything downstream only sees `working / needs_you /
   ready / ended / inactive / unknown`. Another agent system would provide a
   different `transition()` and hook.
+* `folio/transcript.py` – **also Claude-specific**: reads `aiTitle` / `lastPrompt`
+  out of Claude Code's transcript so sessions have names. Purely additive — delete
+  it and sessions fall back to their ids.
 * `folio/hook.py` / `folio/hooks.py` – the observer entrypoint, and the
   settings.json merge/unmerge.
 * `folio/server.py` – JSON API + static files. `resume_command()` is a plain

@@ -56,8 +56,12 @@ def test_record_event_sequence_and_metadata_only(tmp_path):
     assert rec["state"] == ENDED and rec["ended_at"] == "2026-08-29T17:00:30Z"
 
     raw = (tmp_path / "runtime" / "sessions" / f"{SID}.json").read_text()
-    assert "TOP SECRET" not in raw and "passwd" not in raw and "transcript" not in raw and "tool_name" not in raw
-    allowed = {"session_id", "state", "attention", "first_seen", "cwd", "permission_mode", "pid", "background", "last_event", "updated_at", "ended_at"}
+    assert "TOP SECRET" not in raw and "passwd" not in raw and "tool_name" not in raw
+    # The transcript's *path* is metadata we keep, so the server can read the session's
+    # title back out of it live. Nothing from inside the transcript is ever written here.
+    assert json.loads(raw)["transcript_path"] == "/home/u/.claude/projects/x/y.jsonl"
+    allowed = {"session_id", "state", "attention", "first_seen", "cwd", "transcript_path", "permission_mode", "pid",
+               "background", "last_event", "updated_at", "ended_at"}
     assert set(json.loads(raw)) <= allowed
 
 

@@ -1,8 +1,10 @@
 """Ephemeral Claude Code session state, written by the hook and read by the UI.
 
 One small JSON file per session under <data>/runtime/sessions/. Only metadata
-is stored: session id, coarse state, timestamps, cwd, permission mode, pid.
-Never prompts, responses, tool arguments, transcripts or code.
+is stored: session id, coarse state, timestamps, cwd, permission mode, pid, and
+the path of Claude Code's own transcript. Never prompts, responses, tool
+arguments, transcript *contents* or code -- `transcript.py` reads the session's
+title out of that file at request time and hands it straight to the UI.
 
 This module is the Claude-specific boundary: `transition()` knows about Claude
 Code hook event names; everything else just consumes coarse states.
@@ -182,6 +184,7 @@ class RuntimeStore:
             "attention": None,
             "first_seen": iso(now),
             "cwd": None,
+            "transcript_path": None,
             "permission_mode": None,
             "pid": None,
             "background": None,
@@ -195,6 +198,8 @@ class RuntimeStore:
         record["updated_at"] = iso(now)
         if event.get("cwd"):
             record["cwd"] = str(event["cwd"])
+        if event.get("transcript_path"):
+            record["transcript_path"] = str(event["transcript_path"])
         if event.get("permission_mode"):
             record["permission_mode"] = str(event["permission_mode"])
         if record["state"] == ENDED:
