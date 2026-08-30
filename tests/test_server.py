@@ -1,0 +1,122 @@
+import json
+import threading
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+
+import pytest
+
+from folio.config import Config
+from folio.runtime import RuntimeStore
+from folio.server import make_server, parse_bind, resume_command
+
+
+@pytest.fixture
+def server(tmp_path, fixture_repo):
+    data = tmp_path / "data"
+    config = Config(data_dir=data, repo=fixture_repo["repo"], bind="127.0.0.1:0")
+    srv = make_server(config)
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    host, port = srv.server_address[:2]
+
+    def call(method, path, body=None):
+        req = urllib.request.Request(f"http://{host}:{port}{path}", method=method,
+                                     data=json.dumps(body).encode() if body is not None else None,
+                                     headers={"Content-Type": "application/json"} if body is not None else {})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as res:
+                return res.status, json.loads(res.read() or b"{}")
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read() or b"{}")
+
+    yield {"call": call, "config": config, "repo": fixture_repo, "url": f"http://{host}:{port}"}
+    srv.shutdown()
+    srv.server_close()
+
+
+def test_end_to_end_flow(server):
+    call, cfg, repo = server["call"], server["config"], server["repo"]
+    status, ov = call("GET", "/api/overview")
+    assert status == 200 and ov["repo"]["error"] is None
+    assert [w["branch"] for w in ov["repo"]["worktrees"]] == ["main", "feature"]
+
+    assert call("POST", "/api/areas", {"name": "Ranking"})[0] == 200
+    status, parent = call("POST", "/api/items", {"name": "Long-term objective", "area": "Ranking", "status": "active", "notes": "# plan\n\nstep one"})
+    assert status == 201 and parent["status"] == "active" and "<h1>plan</h1>" in parent["notes_html"]
+    status, child = call("POST", "/api/items", {"name": "Prototype", "area": "Ranking", "parent": parent["id"]})
+    assert status == 201 and child["parent"] == parent["id"]
+    status, detail = call("GET", f"/api/items/{parent['id']}")
+    assert [c["id"] for c in detail["children"]] == [child["id"]]
+
+    # notes edit round-trips and touches only the Notes section
+    status, detail = call("PATCH", f"/api/items/{parent['id']}", {"notes": "edited notes", "context": [{"title": "Design doc", "ref": "https://example.com/doc"}]})
+    assert status == 200 and detail["notes"] == "edited notes" and detail["context"][0]["ref"] == "https://example.com/doc"
+    md = (cfg.items_dir / "Ranking" / "long-term-objective.md").read_text()
+    assert "edited notes" in md and "https://example.com/doc" in md
+
+    # runtime: two sessions inside the repo's worktrees, one outside
+    rt = RuntimeStore(cfg.runtime_dir)
+    now = datetime.now(timezone.utc)
+    rt.record_event({"session_id": "s-needs", "hook_event_name": "PermissionRequest", "tool_name": "AskUserQuestion", "cwd": str(repo["worktree"] / "src")}, now=now)
+    rt.record_event({"session_id": "s-work", "hook_event_name": "PreToolUse", "tool_name": "Read", "cwd": str(repo["repo"])}, now=now)
+    rt.record_event({"session_id": "s-elsewhere", "hook_event_name": "Stop", "cwd": "/nowhere"}, now=now)
+
+    status, recent = call("GET", "/api/sessions")
+    assert status == 200 and sorted(s["id"] for s in recent["sessions"]) == ["s-needs", "s-work"]
+    status, recent_all = call("GET", "/api/sessions?all=1")
+    assert len(recent_all["sessions"]) == 3
+
+    # attach multiple sessions to one item (child gets the needs-you one)
+    assert call("POST", f"/api/items/{parent['id']}/sessions", {"session_id": "s-work", "title": "Implementation"})[0] == 200
+    assert call("POST", f"/api/items/{parent['id']}/sessions", {"session_id": "s-unknown", "title": "Manual id"})[0] == 200
+    assert call("POST", f"/api/items/{child['id']}/sessions", {"session_id": "s-needs", "title": "Prototype run"})[0] == 200
+
+    status, detail = call("GET", f"/api/items/{child['id']}")
+    sess = detail["sessions"][0]
+    assert sess["state"] == "needs_you" and sess["attention"] == "question"
+    assert sess["branch"] == "feature" and sess["in_repo"] and sess["is_main_worktree"] is False
+    assert sess["resume_command"] == resume_command("s-needs", str(repo["worktree"] / "src"))
+    assert "claude --resume s-needs" in sess["resume_command"]
+    assert detail["attention"]["level"] == "needs_you"
+
+    status, detail = call("GET", f"/api/items/{parent['id']}")
+    states = {s["id"]: s["state"] for s in detail["sessions"]}
+    assert states == {"s-work": "working", "s-unknown": "unknown"}
+    assert detail["sessions"][0]["is_main_worktree"] is True and detail["sessions"][0]["branch"] == "main"
+    assert detail["attention"]["level"] == "working"
+
+    status, ov = call("GET", "/api/overview")
+    by_id = {i["id"]: i for i in ov["items"]}
+    assert by_id[parent["id"]]["attention"]["level"] == "working"
+    assert by_id[parent["id"]]["rollup"]["level"] == "needs_you"  # child's needs-you bubbles up to the parent card
+    assert by_id[child["id"]]["attention"]["needs_you"] == 1
+
+    status, res = call("GET", "/api/sessions/s-needs/resume")
+    assert status == 200 and res["command"].endswith("claude --resume s-needs") and res["cwd"].endswith("src")
+
+    # detach persists
+    assert call("DELETE", f"/api/items/{parent['id']}/sessions/s-unknown")[0] == 200
+    assert "s-unknown" not in (cfg.items_dir / "Ranking" / "long-term-objective.md").read_text()
+
+    # guard rails
+    assert call("DELETE", f"/api/items/{parent['id']}")[0] == 409  # has children
+    assert call("PATCH", f"/api/items/{parent['id']}", {"parent": child["id"]})[0] == 400  # cycle
+    assert call("PATCH", f"/api/items/{parent['id']}", {"status": "blocked"})[0] == 400
+    assert call("GET", "/api/items/nope")[0] == 404
+    assert call("DELETE", f"/api/items/{child['id']}")[0] == 200
+    assert call("DELETE", f"/api/items/{parent['id']}")[0] == 200
+
+
+def test_static_shell_and_bind_guard(server):
+    with urllib.request.urlopen(server["url"] + "/", timeout=10) as res:
+        assert res.status == 200 and b"<title>folio</title>" in res.read()
+    with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
+        assert res.status == 200 and b"renderDashboard" in res.read()
+    with urllib.request.urlopen(server["url"] + "/item/abc", timeout=10) as res:  # SPA fallback
+        assert b"<title>folio</title>" in res.read()
+    assert parse_bind("127.0.0.1:4317") == ("127.0.0.1", 4317)
+    assert parse_bind("localhost:1") == ("localhost", 1)
+    for bad in ("0.0.0.0:4317", "192.168.1.5:4317", ":::80"):
+        with pytest.raises(ValueError):
+            parse_bind(bad)
