@@ -8,3 +8,5 @@ dist/
 .DS_Store
 # user data never lives in this repo (default data dir is ~/.cc-workspace)
 .cc-workspace/
+# Claude Code worktrees for parallel sessions live here
+.claude/worktrees/

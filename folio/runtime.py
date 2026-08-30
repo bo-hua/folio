@@ -125,6 +125,11 @@ def effective_state(record: dict, now: datetime | None = None, alive: Callable[[
     return state
 
 
+def is_live(record: dict, state: str) -> bool:
+    """A session whose process is (as far as we can tell) still running."""
+    return state in (WORKING, NEEDS_YOU, READY)
+
+
 def aggregate_attention(states: list[str]) -> dict:
     """Item-level roll-up across attached sessions."""
     needs = sum(1 for s in states if s == NEEDS_YOU)
@@ -164,7 +169,7 @@ class RuntimeStore:
         self,
         event: dict,
         now: datetime | None = None,
-        pid_finder: Callable[[], int | None] | None = None,
+        process_finder: Callable[[], tuple[int | None, bool | None]] | None = None,
     ) -> dict | None:
         """Fold one hook event into the session's record. Metadata only."""
         session_id = str(event.get("session_id") or "")
@@ -179,6 +184,7 @@ class RuntimeStore:
             "cwd": None,
             "permission_mode": None,
             "pid": None,
+            "background": None,
             "last_event": None,
             "updated_at": iso(now),
         }
@@ -193,13 +199,15 @@ class RuntimeStore:
             record["permission_mode"] = str(event["permission_mode"])
         if record["state"] == ENDED:
             record["ended_at"] = iso(now)
-        needs_pid = pid_finder is not None and (
-            record.get("pid") is None or event.get("hook_event_name") == "SessionStart"
+        needs_pid = process_finder is not None and (
+            record.get("pid") is None
+            or record.get("background") is None  # records written before `background` existed
+            or event.get("hook_event_name") == "SessionStart"
         )
         if needs_pid:
             try:
-                record["pid"] = pid_finder()
-            except Exception:  # never let pid discovery break the hook
+                record["pid"], record["background"] = process_finder()
+            except Exception:  # never let process discovery break the hook
                 pass
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         tmp = self._path(session_id).with_suffix(".json.tmp")

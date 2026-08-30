@@ -93,7 +93,26 @@ def test_end_to_end_flow(server):
     assert by_id[child["id"]]["attention"]["needs_you"] == 1
 
     status, res = call("GET", "/api/sessions/s-needs/resume")
-    assert status == 200 and res["command"].endswith("claude --resume s-needs") and res["cwd"].endswith("src")
+    assert status == 200 and res["kind"] == "resume" and res["command"].endswith("claude --resume s-needs") and res["cwd"].endswith("src")
+    assert res["alternatives"][0]["command"].endswith("--fork-session")
+
+    # a live *background* session must be attached, not resumed; job commands take the short id
+    import os
+    rt.record_event({"session_id": "b1234567-aaaa-bbbb-cccc-dddddddddddd", "hook_event_name": "Stop", "cwd": str(repo["repo"])},
+                    now=now, process_finder=lambda: (os.getpid(), True))
+    status, res = call("GET", "/api/sessions/b1234567-aaaa-bbbb-cccc-dddddddddddd/resume")
+    assert status == 200 and res["kind"] == "attach" and res["command"] == "claude attach b1234567"
+    assert res["alternatives"][0]["command"].startswith("claude stop b1234567 && cd ")
+    assert call("POST", f"/api/items/{parent['id']}/sessions", {"session_id": "b1234567-aaaa-bbbb-cccc-dddddddddddd", "title": "bg job"})[0] == 200
+    status, detail = call("GET", f"/api/items/{parent['id']}")
+    bg = next(s for s in detail["sessions"] if s["short_id"] == "b1234567")
+    assert bg["background"] is True and bg["resume"]["kind"] == "attach" and bg["resume_command"] == "claude attach b1234567"
+    # a live *interactive* session still gets --resume but with a warning note
+    rt.record_event({"session_id": "i1234567-aaaa-bbbb-cccc-dddddddddddd", "hook_event_name": "Stop", "cwd": str(repo["repo"])},
+                    now=now, process_finder=lambda: (os.getpid(), False))
+    status, res = call("GET", "/api/sessions/i1234567-aaaa-bbbb-cccc-dddddddddddd/resume")
+    assert res["kind"] == "resume" and res["note"] and "another" in res["note"]
+    assert call("DELETE", f"/api/items/{parent['id']}/sessions/b1234567-aaaa-bbbb-cccc-dddddddddddd")[0] == 200
 
     # detach persists
     assert call("DELETE", f"/api/items/{parent['id']}/sessions/s-unknown")[0] == 200

@@ -57,7 +57,7 @@ def test_record_event_sequence_and_metadata_only(tmp_path):
 
     raw = (tmp_path / "runtime" / "sessions" / f"{SID}.json").read_text()
     assert "TOP SECRET" not in raw and "passwd" not in raw and "transcript" not in raw and "tool_name" not in raw
-    allowed = {"session_id", "state", "attention", "first_seen", "cwd", "permission_mode", "pid", "last_event", "updated_at", "ended_at"}
+    allowed = {"session_id", "state", "attention", "first_seen", "cwd", "permission_mode", "pid", "background", "last_event", "updated_at", "ended_at"}
     assert set(json.loads(raw)) <= allowed
 
 
@@ -90,3 +90,15 @@ def test_aggregate_attention_across_sessions():
     assert aggregate_attention([])["level"] is None
     agg = aggregate_attention([NEEDS_YOU, NEEDS_YOU, WORKING])
     assert (agg["needs_you"], agg["working"], agg["sessions"]) == (2, 1, 3)
+
+
+def test_process_finder_records_pid_and_background(tmp_path):
+    store = RuntimeStore(tmp_path / "runtime")
+    store.record_event(ev("SessionStart"), process_finder=lambda: (4242, True))
+    rec = store.get(SID)
+    assert rec["pid"] == 4242 and rec["background"] is True
+    # later events reuse the discovered process unless a new SessionStart (resume) arrives
+    store.record_event(ev("PreToolUse"), process_finder=lambda: (1, False))
+    assert store.get(SID)["pid"] == 4242
+    store.record_event(ev("SessionStart", source="resume"), process_finder=lambda: (5150, False))
+    assert (store.get(SID)["pid"], store.get(SID)["background"]) == (5150, False)

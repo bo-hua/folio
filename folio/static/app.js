@@ -223,8 +223,12 @@ function selectEl(options, value, onchange) {
 function sessionsBlock(it) {
   const resumeBox = el('div', {});
   const showResume = (s) => {
-    resumeBox.replaceChildren(el('div', { class: 'resume' }, el('code', {}, s.resume_command), el('button', { onclick: () => copyText(s.resume_command) }, 'Copy')),
-      el('div', { class: 'muted small', style: 'margin-top:4px' }, 'Run this in a terminal on the machine where folio and Claude Code run.'));
+    const plan = s.resume || { kind: 'resume', command: s.resume_command, alternatives: [] };
+    resumeBox.replaceChildren(
+      el('div', { class: 'resume' }, el('code', {}, plan.command), el('button', { onclick: () => copyText(plan.command) }, 'Copy')),
+      el('div', { class: 'muted small', style: 'margin-top:4px' }, plan.note || 'Run this in a terminal on the machine where folio and Claude Code run.'),
+      ...(plan.alternatives || []).map(alt => el('div', { class: 'row small', style: 'margin-top:6px' },
+        el('span', { class: 'muted' }, alt.label + ':'), el('code', { class: 'muted' }, alt.command), el('button', { class: 'small', onclick: () => copyText(alt.command) }, 'Copy'))));
   };
   const rows = it.sessions.map(s => el('tr', {},
     el('td', {}, el('button', { class: 'link', title: 'click to edit title', onclick: async () => {
@@ -237,7 +241,7 @@ function sessionsBlock(it) {
       : s.cwd ? [el('div', { class: 'muted small' }, 'outside configured repo'), el('div', { class: 'mono muted small' }, shortPath(s.cwd))] : el('span', { class: 'muted' }, '—'),
       s.cwd && s.cwd !== s.worktree ? el('div', { class: 'mono muted small', title: 'session cwd' }, `cwd ${shortPath(s.cwd)}`) : null),
     el('td', {}, el('div', { class: 'row' },
-      el('button', { class: 'primary small', onclick: () => showResume(s) }, 'Resume'),
+      el('button', { class: 'primary small', title: s.resume && s.resume.note || '', onclick: () => showResume(s) }, s.resume && s.resume.kind === 'attach' ? 'Attach' : 'Resume'),
       el('button', { class: 'small', onclick: async () => {
         if (!window.confirm('Detach this session from the item? (The Claude session itself is untouched.)')) return;
         try { await api('DELETE', `/api/items/${it.id}/sessions/${s.id}`); route(); } catch (e) { toast(e.message); }
@@ -377,7 +381,7 @@ async function renderSessions() {
     el('td', {}, s.attached_to.length ? s.attached_to.map(a => el('div', {}, el('a', { href: `#/item/${a.id}` }, a.name))) : el('span', { class: 'muted' }, 'unattached')),
     el('td', {}, el('div', { class: 'row' },
       selectEl(itemOptions, '', async (v) => { if (!v) return; try { await api('POST', `/api/items/${v}/sessions`, { session_id: s.id, title: '' }); toast('Attached'); route(); } catch (e) { toast(e.message); } }),
-      el('button', { class: 'small', onclick: () => copyText(s.resume_command) }, 'Copy resume')))));
+      el('button', { class: 'small', title: s.resume && s.resume.note || '', onclick: () => copyText(s.resume_command) }, s.resume && s.resume.kind === 'attach' ? 'Copy attach' : 'Copy resume')))));
   page(ov,
     el('div', { class: 'title-row' }, el('h1', {}, 'Recently observed Claude sessions'), el('span', { class: 'grow' }),
       el('label', { class: 'small' }, el('input', { type: 'checkbox', checked: showAll, onchange: e => { location.hash = e.target.checked ? '#/sessions?all=1' : '#/sessions'; } }), ' show sessions outside the configured repo')),

@@ -141,8 +141,10 @@ To test without touching user-level settings, install into a project:
   session counts and child rows; a child's attention bubbles up to the parent card.
   Type into "Quick idea in …" and press Enter to create an idea in one step.
 * **Item** – rename, status/area/parent selects, attached Claude sessions with live
-  state · last update · worktree · branch · cwd, **Resume** (shows and copies
-  `cd <cwd> && claude --resume <id>`), **Attach Claude session** (pick from recently
+  state · last update · worktree · branch · cwd, **Resume / Attach** (shows and copies
+  the right command: `claude attach <short-id>` for a *running background* session,
+  otherwise `cd <cwd> && claude --resume <id>`, plus stop-then-resume and
+  `--fork-session` alternatives), **Attach Claude session** (pick from recently
   observed sessions inside the configured repo, or paste an id), child cards with
   quick-add, AI state, editable Notes (Markdown), context refs (URLs are links,
   paths get a Copy button).

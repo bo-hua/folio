@@ -69,3 +69,22 @@ def test_hook_cli_is_a_silent_observer(tmp_path):
     assert proc.returncode == 0 and proc.stdout == ""
     proc = run_hook(tmp_path, "")
     assert proc.returncode == 0 and proc.stdout == ""
+
+
+def test_find_claude_process_detects_background_sessions(monkeypatch):
+    from folio import hook
+    import subprocess as sp
+    table = {  # pid -> (ppid, command)
+        300: (200, "/bin/sh -c /x/.venv/bin/folio hook"),
+        200: (100, "claude bg-spare --bg-spare /tmp/cc-daemon/spare/abc.claim.sock"),
+        100: (1, "/bin/zsh -l"),
+    }
+    def fake_run(args, **kw):
+        pid = int(args[-1]); ppid, cmd = table[pid]
+        return sp.CompletedProcess(args, 0, stdout=f"{ppid} {cmd}\n", stderr="")
+    monkeypatch.setattr(hook.subprocess, "run", fake_run)
+    assert hook.find_claude_process(start_pid=300) == (200, True)
+    table[200] = (100, "/Users/me/.local/bin/claude --resume abc")
+    assert hook.find_claude_process(start_pid=300) == (200, False)
+    table[200] = (100, "node something-else")
+    assert hook.find_claude_process(start_pid=300) == (None, None)

@@ -24,7 +24,7 @@ from . import __version__
 from .config import Config
 from .gitinfo import Worktree, match_cwd, repo_snapshot
 from .items import STATUSES, Item, ItemStore
-from .runtime import NEEDS_YOU, UNKNOWN, RuntimeStore, aggregate_attention, effective_state, iso, utc_now
+from .runtime import NEEDS_YOU, UNKNOWN, RuntimeStore, aggregate_attention, effective_state, is_live, iso, utc_now
 
 STATIC_DIR = Path(__file__).parent / "static"
 _ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
@@ -44,12 +44,44 @@ def render_md(text: str | None) -> str:
 
 
 def resume_command(session_id: str, cwd: str | None) -> str:
-    """The exact command to continue this session on the server machine.
-
-    Deliberately a plain string so a richer resume mechanism can replace it.
-    """
+    """`claude --resume` for a session that is not running (cd into its cwd first)."""
     cmd = f"claude --resume {shlex.quote(session_id)}"
     return f"cd {shlex.quote(cwd)} && {cmd}" if cwd else cmd
+
+
+def resume_plan(session_id: str, record: dict | None, state: str) -> dict:
+    """How to get back into this session on the server machine.
+
+    Deliberately plain shell strings so a richer mechanism can replace them:
+      - a live *background* session (`claude --bg`, jobs) must be re-opened with
+        `claude attach <short-id>`; `--resume` is refused until it is stopped.
+      - a live interactive session is open in some terminal already.
+      - anything else: `cd <cwd> && claude --resume <id>`.
+    """
+    cwd = record.get("cwd") if record else None
+    short = session_id[:8]
+    resume = resume_command(session_id, cwd)
+    fork = {"label": "Branch off a copy instead", "command": f"{resume} --fork-session"}
+    if record and is_live(record, state) and record.get("background"):
+        return {
+            "kind": "attach",
+            "command": f"claude attach {short}",
+            "note": "This session is running as a Claude Code background session; attach to it. "
+                    "Ctrl+Z drops back to your shell and it keeps running.",
+            "alternatives": [
+                {"label": "Stop it, then resume in this terminal", "command": f"claude stop {short} && {resume}"},
+                fork,
+            ],
+        }
+    if record and is_live(record, state):
+        return {
+            "kind": "resume",
+            "command": resume,
+            "note": "This session looks live (its process is still running) -- it is probably open in another "
+                    "terminal; use that one. Resume here only if it is not.",
+            "alternatives": [fork],
+        }
+    return {"kind": "resume", "command": resume, "note": None, "alternatives": [fork]}
 
 
 @dataclass
@@ -99,11 +131,14 @@ class App:
             "branch": None,
             "is_main_worktree": None,
             "in_repo": False,
+            "background": None,
+            "resume": resume_plan(sid, None, UNKNOWN),
             "resume_command": resume_command(sid, None),
         }
         rec = snap.runtime.get(sid)
         if rec:
             state = effective_state(rec, snap.now)
+            plan = resume_plan(sid, rec, state)
             view.update(
                 state=state,
                 attention=rec.get("attention") if state == NEEDS_YOU else None,
@@ -111,7 +146,9 @@ class App:
                 updated_at=rec.get("updated_at"),
                 cwd=rec.get("cwd"),
                 permission_mode=rec.get("permission_mode"),
-                resume_command=resume_command(sid, rec.get("cwd")),
+                background=rec.get("background"),
+                resume=plan,
+                resume_command=plan["command"],
             )
             wt = match_cwd(rec.get("cwd"), snap.worktrees)
             if wt:
@@ -299,8 +336,9 @@ class App:
         if not _ID_RE.match(sid):
             raise ApiError(400, "bad session id")
         rec = self.runtime.get(sid)
-        cwd = rec.get("cwd") if rec else None
-        return {"session_id": sid, "cwd": cwd, "command": resume_command(sid, cwd)}
+        state = effective_state(rec) if rec else UNKNOWN
+        plan = resume_plan(sid, rec, state)
+        return {"session_id": sid, "cwd": rec.get("cwd") if rec else None, "state": state, **plan}
 
     # ---------------------------------------------------------------- routing
     ROUTES = (
