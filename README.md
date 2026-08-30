@@ -140,7 +140,7 @@ uv pip install --python .venv/bin/python -e '.[dev]'   # or: .venv/bin/pip insta
 
 **Restart `folio serve` after editing folio itself.** The HTML/CSS/JS is read
 from disk on every request, but the running process keeps the Python it started
-with -- so an un-restarted server hands the browser buttons whose endpoints it
+with — so an un-restarted server hands the browser buttons whose endpoints it
 has never heard of, and they fail with `no such endpoint`. The dashboard detects
 this (server start time vs. the newest mtime under `folio/`) and shows a banner.
 
@@ -329,7 +329,7 @@ The UI is a client of a small JSON API; anything the UI does, a script can do to
 
 | method | path | purpose |
 |---|---|---|
-| GET | `/api/overview` | everything the dashboard needs (areas, items, rolled-up runtime state) |
+| GET | `/api/overview` | everything the dashboard needs (areas, items, rolled-up runtime state, whether the server is running stale code) |
 | GET | `/api/repo` | git worktree snapshot |
 | GET, POST | `/api/areas` | list / create Areas |
 | DELETE | `/api/areas/<name>` | delete an Area and its items (cascade) |
