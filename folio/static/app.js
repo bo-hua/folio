@@ -5,10 +5,15 @@
 const STATE_LABEL = { needs_you: 'Needs you', working: 'Working', ready: 'Ready', ended: 'Ended', inactive: 'Inactive', unknown: 'No runtime info' };
 const RAIL_GROUPS = [['needs_you', 'Needs you'], ['working', 'Working'], ['ready', 'Ready'], ['ended', 'Ended / inactive']];
 const POLL_MS = 4000;
-// Focus modes: which finished lifecycles the canvas leaves out, so what is live stays legible.
-const FOCUS_HIDES = { all: [], done: ['done'], donepark: ['done', 'parked'] };
-const FOCUS_ORDER = ['all', 'done', 'donepark'];
-const FOCUS_LABEL = { all: 'Showing everything', done: 'Hiding done cards', donepark: 'Hiding done and parked cards' };
+// The three canvas modes. `keep` is what earns a card its place on its own merit;
+// a card also stays when something inside it stays, and while it is the one you have open.
+const LIVE_STATES = new Set(['needs_you', 'working', 'ready']); // same boundary as runtime.is_live()
+const FOCUS_MODES = {
+  all: { label: 'Showing everything' },
+  done: { label: 'Hiding done cards', keep: c => lifecycle(c) !== 'done' },
+  live: { label: 'Only cards with a live session', keep: c => sessOf(c.id).some(s => LIVE_STATES.has(s.state)) },
+};
+const FOCUS_ORDER = ['all', 'done', 'live'];
 
 let OV = null, AREAS = [], CARDS = [], SESSIONS = [];
 const state = { cam: { x: 16, y: 8, s: 0.9 }, selected: null, detail: null, railFilter: 'all', allRepos: false, attnCursor: -1, resumeOpen: null, focus: 'all' };
@@ -54,14 +59,15 @@ const isVisible = c => !VISIBLE || VISIBLE.has(c.id);
 const visKidsOf = id => kidsOf(id).filter(isVisible);
 const visTopOf = a => topOf(a).filter(isVisible);
 function computeVisible() {
-  const hide = new Set(FOCUS_HIDES[state.focus] || []);
-  if (!hide.size) { VISIBLE = null; return; }
+  const keepOwn = (FOCUS_MODES[state.focus] || FOCUS_MODES.all).keep;
+  if (!keepOwn) { VISIBLE = null; return; }
   VISIBLE = new Set();
-  // A finished card still shows when something inside it survives, or one of its own
-  // sessions needs you -- the filter must never swallow a card that is asking for you.
+  // A card the mode would drop still shows when something inside it survives -- the parent
+  // is the way in -- or when one of its own sessions needs you: the filter must never
+  // swallow a card that is asking for you.
   const keep = c => {
     const kidsKept = kidsOf(c.id).map(keep).includes(true); // map, not some: every child is visited
-    const v = kidsKept || !hide.has(lifecycle(c)) || sessOf(c.id).some(s => s.state === 'needs_you');
+    const v = kidsKept || keepOwn(c) || sessOf(c.id).some(s => s.state === 'needs_you');
     if (v) VISIBLE.add(c.id);
     return v;
   };
@@ -85,7 +91,7 @@ function restore() {
   try {
     (JSON.parse(localStorage.getItem('folio.collapsed') || '[]')).forEach(id => collapsed.add(id));
     const cam = JSON.parse(localStorage.getItem('folio.cam') || 'null'); if (cam && typeof cam.s === 'number') state.cam = cam;
-    const f = localStorage.getItem('folio.focus'); if (f && FOCUS_HIDES[f]) state.focus = f;
+    const f = localStorage.getItem('folio.focus'); if (f && FOCUS_MODES[f]) state.focus = f;
   } catch (e) { /* ignore */ }
 }
 
@@ -233,7 +239,6 @@ function renderFocus() {
   n.hidden = !hid;
   n.textContent = `${hid} hidden`;
   n.title = `${hid} card${hid === 1 ? '' : 's'} hidden by the filter — click to show everything.\nA card whose session needs you is never hidden.`;
-  $$('.legend span[data-lc]').forEach(el => el.classList.toggle('off', (FOCUS_HIDES[state.focus] || []).includes(el.dataset.lc)));
 }
 function renderTopbar() {
   const shown = VISIBLE ? VISIBLE.size : CARDS.length;
@@ -575,10 +580,10 @@ $('#inspector').addEventListener('submit', e => {
 
 // ------------------------------------------------------------------ top bar / zoom / keys / boot
 function setFocus(mode, announce = true) {
-  if (!FOCUS_HIDES[mode] || mode === state.focus) return;
+  if (!FOCUS_MODES[mode] || mode === state.focus) return;
   state.focus = mode; persist(); render();
   const hid = hiddenCount();
-  if (announce) hint(`${FOCUS_LABEL[mode]}${hid ? ` — ${hid} card${hid === 1 ? '' : 's'} out of sight` : ''}`);
+  if (announce) hint(`${FOCUS_MODES[mode].label}${hid ? ` — ${hid} card${hid === 1 ? '' : 's'} out of sight` : ''}`);
 }
 $('#focus').addEventListener('click', e => { const b = e.target.closest('button[data-focus]'); if (b) setFocus(b.dataset.focus); });
 $('#focusCount').addEventListener('click', () => setFocus('all'));

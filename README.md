@@ -334,15 +334,19 @@ One screen, three regions. Nothing on it is positioned by you; you only change
   context refs, AI state when present, and **Delete** (cascades to everything
   nested, after a confirm).
 * **Focus filter (top bar)** – *All · Hide done · Focus*, or **H** to cycle.
-  *Hide done* leaves out cards you marked done; *Focus* leaves out done and
-  parked, so the canvas holds only live work and open ideas. Hiding is by
-  subtree, not by card: a finished card stays when something open is nested
-  inside it (it is the way in), and a card whose session **needs you** is never
-  hidden — the filter must not swallow an alert. Counts stay honest (`9 of 14
-  cards`, an area's `3 of 5 cards`, a parent's `2 hidden` chip), the pill beside
-  the control says how many are out of sight and clears the filter when clicked,
-  and whatever you select comes back onto the canvas while it is open — including
-  a dimmed child clicked in the Inspector.
+  Two different questions: *Hide done* is about the lifecycle **you** set — it
+  leaves out cards you marked done. *Focus* is about **Claude** — it keeps only
+  cards carrying a live session (*needs you · working · ready*, the same boundary
+  the rail draws before *Ended / inactive*), whatever their lifecycle, so a done
+  card someone is still running on stays and an untouched idea does not. Hiding
+  is by subtree, not by card: a card the mode would drop stays when something
+  inside it survives — it is the way in — and a card whose session **needs you**
+  is never hidden, because a filter that swallows an alert is worse than no
+  filter. Counts stay honest (`9 of 14 cards`, an area's `3 of 5 cards`, a
+  parent's `2 hidden` chip), the pill beside the control says how many are out of
+  sight and clears the filter when clicked, and whatever you select comes back
+  onto the canvas while it is open — including a dimmed child clicked in the
+  Inspector.
 * **+ Idea** adds to the Inbox; **+** on an Area header adds there; **+ Area**
   creates a directory. Area headers offer **Delete area** on hover.
 

@@ -160,7 +160,7 @@ def test_static_shell_and_bind_guard(server):
         shell = res.read()
         assert b"<title>folio</title>" in shell
         # the focus filter is chrome the page must actually carry
-        for mode in (b'data-focus="all"', b'data-focus="done"', b'data-focus="donepark"', b'id="focusCount"'):
+        for mode in (b'data-focus="all"', b'data-focus="done"', b'data-focus="live"', b'id="focusCount"'):
             assert mode in shell
     with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
         assert res.status == 200 and res.headers["Content-Type"].startswith(("application/javascript", "text/javascript"))

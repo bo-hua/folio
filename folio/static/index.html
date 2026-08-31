@@ -19,7 +19,7 @@
     <div class="focus" id="focus" role="group" aria-label="Which cards to show">
       <button data-focus="all" title="Show every card">All</button>
       <button data-focus="done" title="Hide cards you have marked done. A done card stays if something open is nested inside it, or one of its sessions needs you.">Hide done</button>
-      <button data-focus="donepark" title="Hide done and parked cards — leaves only what is live, being worked on, or still an idea.">Focus</button>
+      <button data-focus="live" title="Only cards with a live Claude session — working, needs you, or ready. A parent stays when the live work is nested inside it.">Focus</button>
     </div>
     <button class="focus-n" id="focusCount" hidden></button>
     <button class="tb-btn" id="collapseAll" title="Collapse or expand every card that has children">Collapse all</button>
@@ -43,7 +43,7 @@
   <main class="stage" id="stage">
     <div class="world" id="world"></div>
     <div class="legend" aria-hidden="true">
-      <span data-lc="idea"><i class="glyph idea"></i>idea</span><span data-lc="active"><i class="glyph active"></i>active</span><span data-lc="done"><i class="glyph done"></i>done</span><span data-lc="parked"><i class="glyph parked"></i>parked</span>
+      <span><i class="glyph idea"></i>idea</span><span><i class="glyph active"></i>active</span><span><i class="glyph done"></i>done</span><span><i class="glyph parked"></i>parked</span>
       <i class="sep"></i>
       <span><i class="dot needs_you"></i>needs you</span><span><i class="dot working"></i>working</span><span><i class="dot ready"></i>ready</span><span><i class="dot ended"></i>ended</span>
     </div>
