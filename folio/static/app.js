@@ -226,6 +226,7 @@ function renderRail() {
   }
   if (!any) rail.appendChild(h('div', { class: 'rail-empty' }, state.railFilter === 'unattached' ? 'Every session is attached to a card.' : state.railFilter === 'attention' ? 'Nothing needs you right now.' : 'No Claude sessions observed yet. Install the hook (folio hooks install) and start one.'));
 }
+function fitTitle(el) { if (!el.isConnected) return; el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
 function renderInspector() {
   const ins = $('#inspector'); const c = state.selected && cardById(state.selected);
   if (!c) { ins.classList.remove('open'); return; }
@@ -235,8 +236,10 @@ function renderInspector() {
   const path = h('div', { class: 'ins-path' }, h('b', {}, area ? area.name : c.area));
   ancestors(c.id).forEach(pid => { path.append(h('span', { class: 'crumb-sep' }, '›'), h('button', { class: 'crumb', style: 'padding:0 2px', 'data-act': 'reveal', 'data-id': pid }, cardById(pid).name)); });
   if (c.parent) path.appendChild(h('button', { class: 'mini', 'data-act': 'move-out', title: 'Make it a sibling of its parent' }, '↑ Move out'));
-  ins.appendChild(h('div', { class: 'ins-head' }, path, h('div', { class: 'ins-title' }, h('i', { class: `glyph ${lc}` }), h('input', { value: c.name, 'data-act': 'rename', 'aria-label': 'Card name' })),
+  const title = h('textarea', { value: c.name, rows: 1, 'data-act': 'rename', 'aria-label': 'Card name', oninput: e => fitTitle(e.target) });
+  ins.appendChild(h('div', { class: 'ins-head' }, path, h('div', { class: 'ins-title' }, h('i', { class: `glyph ${lc}` }), title),
     h('button', { class: 'ins-close', 'data-act': 'close', title: 'Close (Esc)' }, '×')));
+  fitTitle(title); document.fonts.ready.then(() => fitTitle(title));
   const body = h('div', { class: 'ins-body' });
   // state
   const st = h('div', { class: 'sec' }, h('h3', {}, 'State'),
@@ -361,7 +364,7 @@ async function newCard(spec) {
     const it = await api('POST', '/api/items', { name: 'Untitled idea', ...spec });
     if (spec.parent) collapsed.delete(spec.parent);
     await load(); render(); select(it.id); ensureVisible(cardRect(it.id)); flashCard(it.id);
-    requestAnimationFrame(() => { const i = $('.ins-title input'); if (i) { i.focus({ preventScroll: true }); i.select(); } });
+    requestAnimationFrame(() => { const i = $('.ins-title textarea'); if (i) { i.focus({ preventScroll: true }); i.select(); } });
   } catch (e) { toastError(e); }
 }
 
@@ -513,14 +516,14 @@ $('#inspector').addEventListener('click', e => {
 });
 $('#inspector').addEventListener('change', e => {
   const c = cardById(state.selected); if (!c) return; const a = e.target.dataset.act;
-  if (a === 'rename') { const name = e.target.value.trim(); if (name && name !== c.name) mutate(() => api('PATCH', `/api/items/${encodeURIComponent(c.id)}`, { name }), {}); else e.target.value = c.name; }
+  if (a === 'rename') { const name = e.target.value.replace(/\s+/g, ' ').trim(); if (name && name !== c.name) mutate(() => api('PATCH', `/api/items/${encodeURIComponent(c.id)}`, { name }), {}); else { e.target.value = c.name; fitTitle(e.target); } }
   if (a === 'notes') mutate(() => api('PATCH', `/api/items/${encodeURIComponent(c.id)}`, { notes: e.target.value }), { msg: 'Notes saved' });
   if (a === 'park-note' && e.target.value.trim() !== c.parkNote) {
     const note = e.target.value.trim();
     mutate(() => api('PATCH', `/api/items/${encodeURIComponent(c.id)}`, { status: 'parked', park_note: note }), { msg: note ? 'Park note saved' : 'Park note cleared' });
   }
 });
-$('#inspector').addEventListener('keydown', e => { if (e.target.dataset.act === 'rename' && e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') e.target.blur(); });
+$('#inspector').addEventListener('keydown', e => { if (e.target.dataset.act === 'rename' && e.key === 'Enter') { e.preventDefault(); e.target.blur(); } if (e.key === 'Escape') e.target.blur(); });
 $('#inspector').addEventListener('submit', e => {
   e.preventDefault(); const c = cardById(state.selected); if (!c) return;
   if (e.target.dataset.act === 'add-kid-form') { const name = e.target.querySelector('input').value.trim(); if (!name) return; mutate(() => api('POST', '/api/items', { name, parent: c.id }), { msg: `Added “${name}” inside “${c.name}”` }).then(() => collapsed.delete(c.id)); }
