@@ -148,7 +148,8 @@ has never heard of, and they fail with `no such endpoint`. The dashboard detects
 this (server start time vs. the newest mtime under `folio/`) and shows a banner.
 
 Other commands: `folio worktrees` (what git reports), `folio sessions [--all]`
-(what the hook has observed), `folio hooks print|install|uninstall [--dry-run]`.
+(what the hook has observed), `folio hooks print|install|uninstall [--dry-run]`,
+`folio tidy [--dry-run]` (rename item files whose slug drifted from their name).
 
 Data directory: `~/.cc-workspace` by default, or `--data-dir PATH` / `FOLIO_DATA_DIR=PATH`.
 
@@ -190,6 +191,11 @@ Data directory: `~/.cc-workspace` by default, or `--data-dir PATH` / `FOLIO_DATA
 ```
 
 Back up `items/`; `runtime/` is disposable.
+
+The filename is a slug of `name` and follows it: rename a card and the file is
+renamed with it, so the directory always reads like the card list. Only `id`
+identifies an item, so a filename is safe to change by hand — `folio tidy` puts
+any that have drifted back in step (`--dry-run` first to see the moves).
 
 ### Item file
 

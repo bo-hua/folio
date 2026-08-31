@@ -1,4 +1,4 @@
-"""`folio` command line: init, serve, hook, hooks {print,install,uninstall}, worktrees, sessions."""
+"""`folio` command line: init, serve, hook, hooks {print,install,uninstall}, worktrees, sessions, tidy."""
 from __future__ import annotations
 
 import argparse
@@ -24,6 +24,29 @@ def cmd_init(args) -> int:
     print(f"wrote {path}")
     print(f"items dir: {store.items_dir} (area '{args.area}' created)")
     print("next: `folio hooks print` to see the Claude hook config, then `folio serve`")
+    return 0
+
+
+def cmd_tidy(args) -> int:
+    """Rename item files whose slug drifted from the item's name."""
+    from .items import ItemStore
+
+    data_dir = resolve_data_dir(args.data_dir)
+    store = ItemStore(data_dir / "items")
+    if args.dry_run:
+        stale = [
+            (i.path, store.planned_path(i))
+            for i in store.list_items()
+            if store.planned_path(i) is not None
+        ]
+        for old_path, new_path in stale:
+            print(f"{old_path.name} -> {new_path.name}  ({old_path.parent.name})")
+        print(f"{len(stale)} file(s) would be renamed (dry run)")
+        return 0
+    moved = store.retitle_files()
+    for old_path, new_path in moved:
+        print(f"{old_path.name} -> {new_path.name}  ({new_path.parent.name})")
+    print(f"renamed {len(moved)} file(s)")
     return 0
 
 
@@ -148,6 +171,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("worktrees", parents=[common], help="list the configured repo's worktrees")
     p.add_argument("--repo")
     p.set_defaults(func=cmd_worktrees)
+
+    p = sub.add_parser("tidy", parents=[common], help="rename item files whose slug no longer matches their name")
+    p.add_argument("--dry-run", action="store_true", help="show what would be renamed without touching anything")
+    p.set_defaults(func=cmd_tidy)
 
     p = sub.add_parser("sessions", parents=[common], help="list recently observed Claude sessions")
     p.add_argument("--all", action="store_true", help="include sessions outside the configured repo")
