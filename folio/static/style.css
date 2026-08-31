@@ -238,9 +238,10 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .ins-path b{font-weight:500;color:var(--ink-2)}
 .ins-path .mini{margin-left:auto}
 .ins-title{display:flex;gap:9px;align-items:flex-start}
-.ins-title .glyph{margin-top:8px;transform:scale(1.2)}
-.ins-title input{flex:1;border:0;background:transparent;font-family:var(--serif);font-style:italic;font-size:22px;line-height:1.2;padding:2px 0;border-bottom:1px solid transparent;min-width:0}
-.ins-title input:hover,.ins-title input:focus{border-bottom-color:var(--line-2);outline:none}
+.ins-title .glyph{margin-top:7px;transform:scale(1.2)}
+/* one family for the whole UI — the title earns its rank from size and weight, not a different typeface */
+.ins-title textarea{flex:1;border:0;background:transparent;font-family:var(--sans);font-size:19px;font-weight:600;line-height:1.32;letter-spacing:-.014em;color:var(--ink);padding:2px 0;border-bottom:1px solid transparent;min-width:0;resize:none;overflow:hidden;text-wrap:pretty}
+.ins-title textarea:hover,.ins-title textarea:focus{border-bottom-color:var(--line-2);outline:none}
 .ins-close{position:absolute;top:12px;right:12px;width:26px;height:26px;border-radius:7px;color:var(--muted);display:grid;place-items:center;font-size:16px}
 .ins-close:hover{background:var(--raised);color:var(--ink)}
 .ins-body{overflow-y:auto;flex:1;padding:6px 18px 24px}
@@ -257,6 +258,8 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .seg button:hover{border-color:var(--line-2);background:var(--raised)}
 .seg button.on{background:var(--ink);border-color:var(--ink);color:var(--surface)}
 .seg button.on .glyph{border-color:var(--surface)}
+.park-note{width:100%;margin-top:6px;border:1px solid var(--line);border-radius:7px;padding:5px 9px;background:var(--surface);font-family:var(--sans);font-size:12px;color:var(--ink-2)}
+.park-note::placeholder{color:var(--faint)}
 .attn-call{margin-top:10px;display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;background:var(--attn-soft);color:var(--attn-ink);font-size:12px}
 .attn-call b{font-weight:600}
 .attn-call button{margin-left:auto;padding:4px 9px;border-radius:6px;background:var(--attn);color:var(--on-attn);font-weight:500;font-size:11.5px}

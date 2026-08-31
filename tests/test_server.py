@@ -164,8 +164,10 @@ def test_static_shell_and_bind_guard(server):
             assert mode in shell
     with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
         assert res.status == 200 and res.headers["Content-Type"].startswith(("application/javascript", "text/javascript"))
-        app = res.read()
-        assert b"renderRail" in app and b"computeVisible" in app
+        app_js = res.read()
+        assert b"renderRail" in app_js and b"computeVisible" in app_js
+        # Park is a one-click state change: no modal between the click and the state
+        assert b"toggle-park" in app_js and b"Park \xe2\x80\x94 why" not in app_js
     with urllib.request.urlopen(server["url"] + "/static/favicon.svg", timeout=10) as res:
         assert res.status == 200 and res.headers["Content-Type"] == "image/svg+xml"
         assert b"<svg" in res.read()
@@ -176,6 +178,22 @@ def test_static_shell_and_bind_guard(server):
     for bad in ("0.0.0.0:4317", "192.168.1.5:4317", ":::80"):
         with pytest.raises(ValueError):
             parse_bind(bad)
+
+
+def test_inspector_title_uses_the_ui_sans_and_can_wrap(server):
+    """The card title in the inspector is typeset in the same family as the rest of
+    the UI, and is a textarea so a long name wraps instead of being clipped."""
+    with urllib.request.urlopen(server["url"] + "/static/style.css", timeout=10) as res:
+        assert res.status == 200 and res.headers["Content-Type"].startswith("text/css")
+        css = res.read().decode()
+    rule = next(l for l in css.splitlines() if l.startswith(".ins-title textarea{"))
+    assert "font-family:var(--sans)" in rule
+    assert "var(--serif)" not in rule and "font-style:italic" not in rule
+    assert "resize:none" in rule  # height is driven by fitTitle(), not a drag handle
+    with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
+        js = res.read().decode()
+    assert "h('textarea', { value: c.name" in js  # not an <input>: it must be able to wrap
+    assert "$('.ins-title textarea')" in js  # focus-on-create still finds the field
 
 
 def test_overview_flags_a_server_older_than_its_code(server, monkeypatch):

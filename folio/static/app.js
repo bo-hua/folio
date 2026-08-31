@@ -159,7 +159,7 @@ function needsYouCards() { return CARDS.filter(c => sessOf(c.id).some(s => s.sta
 function lifecycleWhy(c) {
   const n = sessOf(c.id).length, kids = kidsOf(c.id);
   if (c.human === 'done') return 'marked done by you';
-  if (c.human === 'parked') return c.parkNote ? `parked — ${c.parkNote}` : 'parked by you';
+  if (c.human === 'parked') return c.parkNote || 'parked by you';
   if (n) return `${n} session${n === 1 ? '' : 's'} attached`;
   if (kids.length && lifecycle(c) === 'active') return 'children have started';
   return 'nothing attached yet';
@@ -279,6 +279,7 @@ function renderRail() {
   }
   if (!any) rail.appendChild(h('div', { class: 'rail-empty' }, state.railFilter === 'unattached' ? 'Every session is attached to a card.' : state.railFilter === 'attention' ? 'Nothing needs you right now.' : 'No Claude sessions observed yet. Install the hook (folio hooks install) and start one.'));
 }
+function fitTitle(el) { if (!el.isConnected) return; el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
 function renderInspector() {
   const ins = $('#inspector'); const c = state.selected && cardById(state.selected);
   if (!c) { ins.classList.remove('open'); return; }
@@ -288,8 +289,10 @@ function renderInspector() {
   const path = h('div', { class: 'ins-path' }, h('b', {}, area ? area.name : c.area));
   ancestors(c.id).forEach(pid => { path.append(h('span', { class: 'crumb-sep' }, '›'), h('button', { class: 'crumb', style: 'padding:0 2px', 'data-act': 'reveal', 'data-id': pid }, cardById(pid).name)); });
   if (c.parent) path.appendChild(h('button', { class: 'mini', 'data-act': 'move-out', title: 'Make it a sibling of its parent' }, '↑ Move out'));
-  ins.appendChild(h('div', { class: 'ins-head' }, path, h('div', { class: 'ins-title' }, h('i', { class: `glyph ${lc}` }), h('input', { value: c.name, 'data-act': 'rename', 'aria-label': 'Card name' })),
+  const title = h('textarea', { value: c.name, rows: 1, 'data-act': 'rename', 'aria-label': 'Card name', oninput: e => fitTitle(e.target) });
+  ins.appendChild(h('div', { class: 'ins-head' }, path, h('div', { class: 'ins-title' }, h('i', { class: `glyph ${lc}` }), title),
     h('button', { class: 'ins-close', 'data-act': 'close', title: 'Close (Esc)' }, '×')));
+  fitTitle(title); document.fonts.ready.then(() => fitTitle(title));
   const body = h('div', { class: 'ins-body' });
   // state
   const st = h('div', { class: 'sec' }, h('h3', {}, 'State'),
@@ -297,6 +300,7 @@ function renderInspector() {
   st.appendChild(h('div', { class: 'seg' },
     h('button', { class: c.human === 'done' ? 'on' : '', 'data-act': 'toggle-done' }, h('i', { class: 'glyph done' }), c.human === 'done' ? 'Done ✓' : 'Mark done'),
     h('button', { class: c.human === 'parked' ? 'on' : '', 'data-act': 'toggle-park' }, h('i', { class: 'glyph parked' }), c.human === 'parked' ? 'Parked' : 'Park')));
+  if (c.human === 'parked') st.appendChild(h('input', { class: 'park-note', 'data-act': 'park-note', value: c.parkNote, placeholder: 'why / until when (optional)', 'aria-label': 'Park note' }));
   if (!c.human && kids.length && kids.every(k => lifecycle(k) === 'done')) st.appendChild(h('div', { class: 'state-line', style: 'margin-top:8px;color:var(--muted);font-size:12px' }, 'Every child is done — mark this done?'));
   if (ag.needs) st.appendChild(h('div', { class: 'attn-call' }, h('i', { class: 'dot needs_you' }), h('span', {}, h('b', {}, ag.needs === 1 ? '1 session' : `${ag.needs} sessions`), ag.descNeeds ? ` need${ag.needs === 1 ? 's' : ''} you (inside)` : ` need${ag.needs === 1 ? 's' : ''} you`), h('button', { 'data-act': 'resume-first' }, 'Open')));
   body.appendChild(st);
@@ -404,7 +408,7 @@ function detachSession(s) {
 }
 function setStatus(c, status, note) {
   const prev = { status: c.human || 'open', park_note: c.parkNote || '' };
-  const body = { status }; if (status === 'parked') body.park_note = note || '';
+  const body = { status }; if (note !== undefined) body.park_note = note; // omitted: the server keeps any note already on the file
   const msg = status === 'done' ? `Marked “${c.name}” done` : status === 'parked' ? `Parked “${c.name}”` : `Reopened “${c.name}”`;
   return mutate(() => api('PATCH', `/api/items/${encodeURIComponent(c.id)}`, body), { msg, undo: () => api('PATCH', `/api/items/${encodeURIComponent(c.id)}`, prev) });
 }
@@ -413,7 +417,7 @@ async function newCard(spec) {
     const it = await api('POST', '/api/items', { name: 'Untitled idea', ...spec });
     if (spec.parent) collapsed.delete(spec.parent);
     await load(); render(); select(it.id); ensureVisible(cardRect(it.id)); flashCard(it.id);
-    requestAnimationFrame(() => { const i = $('.ins-title input'); if (i) { i.focus({ preventScroll: true }); i.select(); } });
+    requestAnimationFrame(() => { const i = $('.ins-title textarea'); if (i) { i.focus({ preventScroll: true }); i.select(); } });
   } catch (e) { toastError(e); }
 }
 
@@ -540,7 +544,7 @@ $('#inspector').addEventListener('click', e => {
   const act = e.target.closest('[data-act]'); if (!act) return; const a = act.dataset.act, c = cardById(state.selected); if (!c) return;
   if (a === 'close') select(null);
   if (a === 'toggle-done') setStatus(c, c.human === 'done' ? 'open' : 'done');
-  if (a === 'toggle-park') { if (c.human === 'parked') setStatus(c, 'open'); else { const why = window.prompt('Park — why / until when? (optional)', ''); if (why === null) return; setStatus(c, 'parked', why.trim()); } }
+  if (a === 'toggle-park') setStatus(c, c.human === 'parked' ? 'open' : 'parked');
   if (a === 'detach') { const s = sessById(act.dataset.sid); if (s) detachSession(s); }
   if (a === 'resume' || a === 'resume-first') {
     const s = a === 'resume' ? sessById(act.dataset.sid) : (sessOf(c.id).find(x => x.state === 'needs_you') || sessOf(c.id)[0]); if (!s) return;
@@ -565,10 +569,14 @@ $('#inspector').addEventListener('click', e => {
 });
 $('#inspector').addEventListener('change', e => {
   const c = cardById(state.selected); if (!c) return; const a = e.target.dataset.act;
-  if (a === 'rename') { const name = e.target.value.trim(); if (name && name !== c.name) mutate(() => api('PATCH', `/api/items/${encodeURIComponent(c.id)}`, { name }), {}); else e.target.value = c.name; }
+  if (a === 'rename') { const name = e.target.value.replace(/\s+/g, ' ').trim(); if (name && name !== c.name) mutate(() => api('PATCH', `/api/items/${encodeURIComponent(c.id)}`, { name }), {}); else { e.target.value = c.name; fitTitle(e.target); } }
   if (a === 'notes') mutate(() => api('PATCH', `/api/items/${encodeURIComponent(c.id)}`, { notes: e.target.value }), { msg: 'Notes saved' });
+  if (a === 'park-note' && e.target.value.trim() !== c.parkNote) {
+    const note = e.target.value.trim();
+    mutate(() => api('PATCH', `/api/items/${encodeURIComponent(c.id)}`, { status: 'parked', park_note: note }), { msg: note ? 'Park note saved' : 'Park note cleared' });
+  }
 });
-$('#inspector').addEventListener('keydown', e => { if (e.target.dataset.act === 'rename' && e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') e.target.blur(); });
+$('#inspector').addEventListener('keydown', e => { if (e.target.dataset.act === 'rename' && e.key === 'Enter') { e.preventDefault(); e.target.blur(); } if (e.key === 'Escape') e.target.blur(); });
 $('#inspector').addEventListener('submit', e => {
   e.preventDefault(); const c = cardById(state.selected); if (!c) return;
   if (e.target.dataset.act === 'add-kid-form') { const name = e.target.querySelector('input').value.trim(); if (!name) return; mutate(() => api('POST', '/api/items', { name, parent: c.id }), { msg: `Added “${name}” inside “${c.name}”` }).then(() => collapsed.delete(c.id)); }
