@@ -158,7 +158,10 @@ def test_static_shell_and_bind_guard(server):
     with urllib.request.urlopen(server["url"] + "/", timeout=10) as res:
         assert res.status == 200 and b"<title>folio</title>" in res.read()
     with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
-        assert res.status == 200 and b"renderRail" in res.read()
+        app_js = res.read()
+        assert res.status == 200 and b"renderRail" in app_js
+        # Park is a one-click state change: no modal between the click and the state
+        assert b"toggle-park" in app_js and b"Park \xe2\x80\x94 why" not in app_js
     with urllib.request.urlopen(server["url"] + "/static/favicon.svg", timeout=10) as res:
         assert res.status == 200 and res.headers["Content-Type"] == "image/svg+xml"
         assert b"<svg" in res.read()

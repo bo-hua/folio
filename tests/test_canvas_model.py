@@ -171,6 +171,21 @@ def test_status_semantics_over_http(server):
     assert st == 400 and "status" in err["error"]
 
 
+def test_parking_without_a_note_is_one_call_and_keeps_any_existing_note(server):
+    """The Park button sends no park_note — parking must not need one, and must not
+    wipe a note that is already in the file."""
+    call = server["call"]
+    _, it = call("POST", "/api/items", {"name": "Thing", "area": "Inbox"})
+    st, it = call("PATCH", f"/api/items/{it['id']}", {"status": "parked"})
+    assert st == 200 and it["human_status"] == "parked" and it["park_note"] == ""
+    _, it = call("PATCH", f"/api/items/{it['id']}", {"park_note": "after review"})
+    assert it["human_status"] == "parked" and it["park_note"] == "after review"
+    _, it = call("PATCH", f"/api/items/{it['id']}", {"status": "parked"})  # re-park: note survives
+    assert it["park_note"] == "after review"
+    _, it = call("PATCH", f"/api/items/{it['id']}", {"status": "parked", "park_note": ""})  # cleared explicitly
+    assert it["human_status"] == "parked" and it["park_note"] == ""
+
+
 def test_move_endpoint_cascade_delete_and_exclusive_attach(server):
     call, cfg = server["call"], server["config"]
     call("POST", "/api/areas", {"name": "Ranking"})

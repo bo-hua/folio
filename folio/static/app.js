@@ -125,7 +125,7 @@ function needsYouCards() { return CARDS.filter(c => sessOf(c.id).some(s => s.sta
 function lifecycleWhy(c) {
   const n = sessOf(c.id).length, kids = kidsOf(c.id);
   if (c.human === 'done') return 'marked done by you';
-  if (c.human === 'parked') return c.parkNote ? `parked — ${c.parkNote}` : 'parked by you';
+  if (c.human === 'parked') return c.parkNote || 'parked by you';
   if (n) return `${n} session${n === 1 ? '' : 's'} attached`;
   if (kids.length && lifecycle(c) === 'active') return 'children have started';
   return 'nothing attached yet';
@@ -244,6 +244,7 @@ function renderInspector() {
   st.appendChild(h('div', { class: 'seg' },
     h('button', { class: c.human === 'done' ? 'on' : '', 'data-act': 'toggle-done' }, h('i', { class: 'glyph done' }), c.human === 'done' ? 'Done ✓' : 'Mark done'),
     h('button', { class: c.human === 'parked' ? 'on' : '', 'data-act': 'toggle-park' }, h('i', { class: 'glyph parked' }), c.human === 'parked' ? 'Parked' : 'Park')));
+  if (c.human === 'parked') st.appendChild(h('input', { class: 'park-note', 'data-act': 'park-note', value: c.parkNote, placeholder: 'why / until when (optional)', 'aria-label': 'Park note' }));
   if (!c.human && kids.length && kids.every(k => lifecycle(k) === 'done')) st.appendChild(h('div', { class: 'state-line', style: 'margin-top:8px;color:var(--muted);font-size:12px' }, 'Every child is done — mark this done?'));
   if (ag.needs) st.appendChild(h('div', { class: 'attn-call' }, h('i', { class: 'dot needs_you' }), h('span', {}, h('b', {}, ag.needs === 1 ? '1 session' : `${ag.needs} sessions`), ag.descNeeds ? ` need${ag.needs === 1 ? 's' : ''} you (inside)` : ` need${ag.needs === 1 ? 's' : ''} you`), h('button', { 'data-act': 'resume-first' }, 'Open')));
   body.appendChild(st);
@@ -351,7 +352,7 @@ function detachSession(s) {
 }
 function setStatus(c, status, note) {
   const prev = { status: c.human || 'open', park_note: c.parkNote || '' };
-  const body = { status }; if (status === 'parked') body.park_note = note || '';
+  const body = { status }; if (note !== undefined) body.park_note = note; // omitted: the server keeps any note already on the file
   const msg = status === 'done' ? `Marked “${c.name}” done` : status === 'parked' ? `Parked “${c.name}”` : `Reopened “${c.name}”`;
   return mutate(() => api('PATCH', `/api/items/${encodeURIComponent(c.id)}`, body), { msg, undo: () => api('PATCH', `/api/items/${encodeURIComponent(c.id)}`, prev) });
 }
@@ -487,7 +488,7 @@ $('#inspector').addEventListener('click', e => {
   const act = e.target.closest('[data-act]'); if (!act) return; const a = act.dataset.act, c = cardById(state.selected); if (!c) return;
   if (a === 'close') select(null);
   if (a === 'toggle-done') setStatus(c, c.human === 'done' ? 'open' : 'done');
-  if (a === 'toggle-park') { if (c.human === 'parked') setStatus(c, 'open'); else { const why = window.prompt('Park — why / until when? (optional)', ''); if (why === null) return; setStatus(c, 'parked', why.trim()); } }
+  if (a === 'toggle-park') setStatus(c, c.human === 'parked' ? 'open' : 'parked');
   if (a === 'detach') { const s = sessById(act.dataset.sid); if (s) detachSession(s); }
   if (a === 'resume' || a === 'resume-first') {
     const s = a === 'resume' ? sessById(act.dataset.sid) : (sessOf(c.id).find(x => x.state === 'needs_you') || sessOf(c.id)[0]); if (!s) return;
@@ -514,6 +515,10 @@ $('#inspector').addEventListener('change', e => {
   const c = cardById(state.selected); if (!c) return; const a = e.target.dataset.act;
   if (a === 'rename') { const name = e.target.value.trim(); if (name && name !== c.name) mutate(() => api('PATCH', `/api/items/${encodeURIComponent(c.id)}`, { name }), {}); else e.target.value = c.name; }
   if (a === 'notes') mutate(() => api('PATCH', `/api/items/${encodeURIComponent(c.id)}`, { notes: e.target.value }), { msg: 'Notes saved' });
+  if (a === 'park-note' && e.target.value.trim() !== c.parkNote) {
+    const note = e.target.value.trim();
+    mutate(() => api('PATCH', `/api/items/${encodeURIComponent(c.id)}`, { status: 'parked', park_note: note }), { msg: note ? 'Park note saved' : 'Park note cleared' });
+  }
 });
 $('#inspector').addEventListener('keydown', e => { if (e.target.dataset.act === 'rename' && e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') e.target.blur(); });
 $('#inspector').addEventListener('submit', e => {
