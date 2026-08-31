@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from folio.items import ItemStore, get_section, parse_item, render_item, set_section, split_sections
+from folio.items import ItemStore, filename_stem, get_section, parse_item, render_item, set_section, split_sections
 
 
 @pytest.fixture
@@ -171,15 +171,15 @@ def test_delete_area_cascades_and_detaches_cross_area_children(store):
 
 def test_rename_moves_the_file_and_leaves_nothing_behind(store):
     item = store.create("Untitled idea", "Area")
-    assert item.path.name == "untitled-idea.md"
+    assert item.path.name == "Untitled idea.md"
 
     item.name = "Handle the default next session better"
     store.save(item)
 
-    assert item.path.name == "handle-the-default-next-session-better.md"
+    assert item.path.name == "Handle the default next session better.md"
     assert item.path.exists()
     assert sorted(p.name for p in (store.items_dir / "Area").glob("*.md")) == [
-        "handle-the-default-next-session-better.md"
+        "Handle the default next session better.md"
     ]
     assert store.get(item.id).name == "Handle the default next session better"
 
@@ -187,11 +187,11 @@ def test_rename_moves_the_file_and_leaves_nothing_behind(store):
 def test_saves_that_do_not_rename_leave_the_filename_alone(store):
     first = store.create("Same name", "Area")
     second = store.create("Same name", "Area")
-    assert second.path.name == "same-name-2.md"  # a legitimate collision suffix
+    assert second.path.name == "Same name-2.md"  # a legitimate collision suffix
 
     store.attach_session(second, "sess-1")  # unrelated save
     store.save(second)
-    assert second.path.name == "same-name-2.md"
+    assert second.path.name == "Same name-2.md"
     assert first.path.exists()
 
 
@@ -199,10 +199,42 @@ def test_retitle_files_repairs_names_that_drifted_before_the_fix(store):
     item = store.create("Untitled idea", "Area")
     # simulate the old bug: the name changes, the file does not
     item.path.write_text(item.path.read_text().replace("name: Untitled idea", "name: Rework the UI"))
-    assert item.path.name == "untitled-idea.md"
+    assert item.path.name == "Untitled idea.md"
 
     moved = store.retitle_files()
-    assert [(o.name, n.name) for o, n in moved] == [("untitled-idea.md", "rework-the-ui.md")]
+    assert [(o.name, n.name) for o, n in moved] == [("Untitled idea.md", "Rework the UI.md")]
     assert not item.path.exists()
-    assert (store.items_dir / "Area" / "rework-the-ui.md").exists()
+    assert (store.items_dir / "Area" / "Rework the UI.md").exists()
     assert store.retitle_files() == []  # idempotent
+
+
+def test_filenames_are_the_name_itself_not_a_slug():
+    """The file is read by a person in a Markdown editor, so it keeps the name."""
+    assert filename_stem("Clarify card status") == "Clarify card status"
+    assert filename_stem("Rework the UI") == "Rework the UI"
+    # `:` reads as a separator in a title; the rest are illegal on some
+    # filesystem or break Obsidian's `[[wikilinks]]`, so they become spaces
+    assert filename_stem("Actions speak louder: a paper") == "Actions speak louder - a paper"
+    assert filename_stem('Fix a/b split? "maybe" #2') == "Fix a b split maybe 2"
+    # a leading "." or "_" would hide the file from list_items()
+    assert filename_stem("  ._Untitled idea.  ") == "Untitled idea"
+    assert filename_stem(":::") == "item"
+
+    long_name = "word " * 40
+    stem = filename_stem(long_name)
+    assert len(stem) <= 120 and stem.endswith("word")  # trimmed at a word boundary
+
+    cjk = "推荐系统的生成式排序" * 20  # no spaces to break on, 3 bytes per character
+    assert len(filename_stem(cjk).encode("utf-8")) <= 200
+
+
+def test_a_case_only_rename_moves_the_file_instead_of_suffixing_it(store):
+    """On APFS the item's own file answers exists() for its new name."""
+    item = store.create("rework the ui", "Area")
+    assert item.path.name == "rework the ui.md"
+
+    item.name = "Rework the UI"
+    store.save(item)
+
+    assert item.path.name == "Rework the UI.md"
+    assert [p.name for p in (store.items_dir / "Area").glob("*.md")] == ["Rework the UI.md"]

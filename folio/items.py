@@ -2,7 +2,7 @@
 
 Layout (inside the data dir):
 
-    items/<Area>/<slug>.md
+    items/<Area>/<Item name>.md
 
 An Area is simply a directory. An Item is one Markdown file with a small YAML
 frontmatter and a free-form body. The body may contain an optional
@@ -46,9 +46,39 @@ def new_id() -> str:
     return "".join(secrets.choice(_ID_ALPHABET) for _ in range(8))
 
 
-def slugify(name: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-    return slug[:60].strip("-") or "item"
+# Filenames are read by people -- in `ls`, and in a Markdown editor pointed at
+# the data dir -- so an item's file is called what the item is called. These are
+# the only characters that cannot survive: `/` and NUL are illegal everywhere,
+# the rest are illegal on Windows/SMB or break Obsidian's filename rules and its
+# `[[wikilinks]]`. A `:` becomes ` - ` because titles use it as a separator and
+# "Foo - bar" reads better than "Foo bar".
+_UNSAFE_RE = re.compile(r'[\\/<>"|?*\[\]#^\x00-\x1f]')
+# Long enough that a real paper title survives whole; a path component holds 255
+# bytes, so both caps leave room for ".md" and a "-2" suffix.
+_NAME_MAX_CHARS = 120
+_NAME_MAX_BYTES = 200
+
+
+def filename_stem(name: str) -> str:
+    """The filename, without `.md`, for an item called `name`.
+
+    Keeps the name itself -- case, spaces, punctuation -- rather than reducing it
+    to a URL-style slug. Nothing looks an item up by path (`id` lives in the
+    frontmatter), so the filename's only job is to be legible to whoever is
+    reading the directory.
+    """
+    stem = re.sub(r"\s*:+\s*", " - ", name)
+    stem = _UNSAFE_RE.sub(" ", stem)
+    # A leading "." or "_" would hide the file from list_items(); a trailing "."
+    # or " " is illegal on Windows and quietly dropped by some SMB shares.
+    stem = re.sub(r"\s+", " ", stem).strip(" ._-")
+    if len(stem) > _NAME_MAX_CHARS or len(stem.encode("utf-8")) > _NAME_MAX_BYTES:
+        cut = stem[:_NAME_MAX_CHARS]
+        while len(cut.encode("utf-8")) > _NAME_MAX_BYTES:
+            cut = cut[:-1]
+        head, _, _ = cut.rpartition(" ")  # trim at a word boundary, when the name has one
+        stem = (head or cut).rstrip(" .-")
+    return stem or "item"
 
 
 # --------------------------------------------------------------------------- #
@@ -531,11 +561,17 @@ class ItemStore:
         return self.save(item)
 
     # -- internals --------------------------------------------------------- #
-    def _unique_path(self, area: str, name: str) -> Path:
-        base = slugify(name)
+    def _unique_path(self, area: str, name: str, ignore: Path | None = None) -> Path:
+        """A free path for `name` in `area`. `ignore` is the file being renamed.
+
+        On a case-insensitive filesystem the item's own file answers `exists()`
+        for a case-only rename ("foo" -> "Foo"), so without `ignore` that rename
+        would land on `Foo-2.md`.
+        """
+        base = filename_stem(name)
         path = self.items_dir / area / f"{base}.md"
         n = 2
-        while path.exists():
+        while path.exists() and not (ignore is not None and ignore.exists() and path.samefile(ignore)):
             path = self.items_dir / area / f"{base}-{n}.md"
             n += 1
         return path
@@ -545,22 +581,22 @@ class ItemStore:
 
         Filenames are derived from the name, but for a long while only
         `create()` ever did the deriving -- so renaming a card left the file
-        behind under its old slug. The canvas creates every card as "Untitled
+        behind under its old name. The canvas creates every card as "Untitled
         idea" and renames it a second later, which is how a directory ends up
-        full of `untitled-idea-7.md` files whose contents are something else
+        full of `Untitled idea-7.md` files whose contents are something else
         entirely.
         """
         if item.path is None or not item.path.exists():
             return None
-        desired = slugify(item.name)
+        desired = filename_stem(item.name)
         stem = item.path.stem
-        # `foo-2.md` is the legitimate name for a second item called "Foo": leave it.
+        # `Foo-2.md` is the legitimate name for a second item called "Foo": leave it.
         if stem == desired or re.fullmatch(rf"{re.escape(desired)}-\d+", stem):
             return None
-        return self._unique_path(item.area, item.name)
+        return self._unique_path(item.area, item.name, ignore=item.path)
 
     def _sync_filename(self, item: Item) -> None:
-        """Restore the `items/<Area>/<slug>.md` invariant after a rename."""
+        """Restore the `items/<Area>/<Item name>.md` invariant after a rename."""
         new_path = self.planned_path(item)
         if new_path is None:
             return
@@ -569,7 +605,7 @@ class ItemStore:
         item.path = new_path
 
     def retitle_files(self) -> list[tuple[Path, Path]]:
-        """Rename every file whose slug has drifted from its item's name.
+        """Rename every file whose filename has drifted from its item's name.
 
         Repairs items written before `save()` kept the two in step. Returns the
         (old, new) pairs actually moved; ids live in the frontmatter, so nothing
