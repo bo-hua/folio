@@ -409,6 +409,7 @@ class ItemStore:
         if item.human_status is None:
             item.status = "active" if item.sessions else "idea"  # open: snapshot the derivation
         item.updated = self.clock()
+        self._sync_filename(item)
         self._write(item)
         return item
 
@@ -538,6 +539,49 @@ class ItemStore:
             path = self.items_dir / area / f"{base}-{n}.md"
             n += 1
         return path
+
+    def planned_path(self, item: Item) -> Path | None:
+        """Where `item`'s file belongs, or None when its filename already fits.
+
+        Filenames are derived from the name, but for a long while only
+        `create()` ever did the deriving -- so renaming a card left the file
+        behind under its old slug. The canvas creates every card as "Untitled
+        idea" and renames it a second later, which is how a directory ends up
+        full of `untitled-idea-7.md` files whose contents are something else
+        entirely.
+        """
+        if item.path is None or not item.path.exists():
+            return None
+        desired = slugify(item.name)
+        stem = item.path.stem
+        # `foo-2.md` is the legitimate name for a second item called "Foo": leave it.
+        if stem == desired or re.fullmatch(rf"{re.escape(desired)}-\d+", stem):
+            return None
+        return self._unique_path(item.area, item.name)
+
+    def _sync_filename(self, item: Item) -> None:
+        """Restore the `items/<Area>/<slug>.md` invariant after a rename."""
+        new_path = self.planned_path(item)
+        if new_path is None:
+            return
+        assert item.path is not None
+        os.replace(item.path, new_path)
+        item.path = new_path
+
+    def retitle_files(self) -> list[tuple[Path, Path]]:
+        """Rename every file whose slug has drifted from its item's name.
+
+        Repairs items written before `save()` kept the two in step. Returns the
+        (old, new) pairs actually moved; ids live in the frontmatter, so nothing
+        outside the store refers to these paths.
+        """
+        moved: list[tuple[Path, Path]] = []
+        for item in self.list_items():
+            before = item.path
+            self._sync_filename(item)
+            if item.path != before:
+                moved.append((before, item.path))
+        return moved
 
     def _write(self, item: Item) -> None:
         assert item.path is not None

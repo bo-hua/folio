@@ -130,6 +130,23 @@ def test_end_to_end_flow(server):
     assert call("GET", f"/api/items/{child['id']}")[0] == 404
 
 
+def test_renaming_a_card_renames_its_file(server):
+    """The canvas creates every card as "Untitled idea", then renames it."""
+    call, cfg = server["call"], server["config"]
+    status, item = call("POST", "/api/items", {"name": "Untitled idea", "area": "Ranking"})
+    assert status == 201
+    assert (cfg.items_dir / "Ranking" / "untitled-idea.md").exists()
+
+    status, detail = call("PATCH", f"/api/items/{item['id']}", {"name": "Clarify card status"})
+    assert status == 200 and detail["name"] == "Clarify card status"
+    assert detail["path"].endswith("Ranking/clarify-card-status.md")
+    assert not (cfg.items_dir / "Ranking" / "untitled-idea.md").exists()
+    assert [p.name for p in (cfg.items_dir / "Ranking").glob("*.md")] == ["clarify-card-status.md"]
+
+    # and the item is still reachable by id, with its notes intact
+    assert call("GET", f"/api/items/{item['id']}")[1]["name"] == "Clarify card status"
+
+
 def test_delete_area_removes_directory_and_items(server):
     call, cfg = server["call"], server["config"]
     assert call("POST", "/api/areas", {"name": "Client Work"})[0] == 200

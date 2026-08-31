@@ -167,3 +167,42 @@ def test_delete_area_cascades_and_detaches_cross_area_children(store):
         with pytest.raises(ValueError):
             store.delete_area(bad)
     assert store.areas() == ["Other"]
+
+
+def test_rename_moves_the_file_and_leaves_nothing_behind(store):
+    item = store.create("Untitled idea", "Area")
+    assert item.path.name == "untitled-idea.md"
+
+    item.name = "Handle the default next session better"
+    store.save(item)
+
+    assert item.path.name == "handle-the-default-next-session-better.md"
+    assert item.path.exists()
+    assert sorted(p.name for p in (store.items_dir / "Area").glob("*.md")) == [
+        "handle-the-default-next-session-better.md"
+    ]
+    assert store.get(item.id).name == "Handle the default next session better"
+
+
+def test_saves_that_do_not_rename_leave_the_filename_alone(store):
+    first = store.create("Same name", "Area")
+    second = store.create("Same name", "Area")
+    assert second.path.name == "same-name-2.md"  # a legitimate collision suffix
+
+    store.attach_session(second, "sess-1")  # unrelated save
+    store.save(second)
+    assert second.path.name == "same-name-2.md"
+    assert first.path.exists()
+
+
+def test_retitle_files_repairs_names_that_drifted_before_the_fix(store):
+    item = store.create("Untitled idea", "Area")
+    # simulate the old bug: the name changes, the file does not
+    item.path.write_text(item.path.read_text().replace("name: Untitled idea", "name: Rework the UI"))
+    assert item.path.name == "untitled-idea.md"
+
+    moved = store.retitle_files()
+    assert [(o.name, n.name) for o, n in moved] == [("untitled-idea.md", "rework-the-ui.md")]
+    assert not item.path.exists()
+    assert (store.items_dir / "Area" / "rework-the-ui.md").exists()
+    assert store.retitle_files() == []  # idempotent
