@@ -2,10 +2,15 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from folio.runtime import (
-    ENDED, INACTIVE, NEEDS_YOU, READY, WORKING, RuntimeStore, aggregate_attention, effective_state, transition,
+    ENDED, INACTIVE, NEEDS_YOU, READY, WORKING, RuntimeStore, aggregate_attention, effective_state, iso,
+    subagent_busy, transition,
 )
 
 SID = "0b1c2d3e-4f50-4617-8a9b-0c1d2e3f4a5b"
+
+
+def iso_at(base, seconds):
+    return iso(base + timedelta(seconds=seconds))
 
 
 def ev(name, **extra):
@@ -29,6 +34,12 @@ def test_transition_table():
     assert transition(ev("SessionEnd", reason="exit")) == (ENDED, None)
     assert transition(ev("SubagentStart", agent_id="a1", agent_type="Explore")) == (WORKING, None)
     assert transition(ev("PreToolUse", agent_id="a1", agent_type="Explore")) is None  # inside a subagent: keep main state
+    # ...but attention raised inside a subagent still blocks *you*, so it is never swallowed
+    assert transition(ev("PermissionRequest", tool_name="Bash", agent_id="a1")) == (NEEDS_YOU, "permission")
+    assert transition(ev("PermissionRequest", tool_name="AskUserQuestion", agent_id="a1")) == (NEEDS_YOU, "question")
+    assert transition(ev("Notification", notification_type="permission_prompt", agent_id="a1")) == (NEEDS_YOU, "permission")
+    # an idle prompt inside a subagent says nothing about the main session
+    assert transition(ev("Notification", notification_type="idle_prompt", agent_id="a1")) is None
     # main-session events carry agent_type (e.g. "claude") but no agent_id -- they must still count
     assert transition(ev("PreToolUse", agent_type="claude")) == (WORKING, None)
     assert transition(ev("SessionStart", agent_type="claude")) == (READY, None)
@@ -61,7 +72,7 @@ def test_record_event_sequence_and_metadata_only(tmp_path):
     # title back out of it live. Nothing from inside the transcript is ever written here.
     assert json.loads(raw)["transcript_path"] == "/home/u/.claude/projects/x/y.jsonl"
     allowed = {"session_id", "state", "attention", "first_seen", "cwd", "transcript_path", "permission_mode", "pid",
-               "background", "last_event", "updated_at", "ended_at"}
+               "background", "last_event", "updated_at", "ended_at", "main_event_at", "agent_event_at"}
     assert set(json.loads(raw)) <= allowed
 
 
@@ -106,3 +117,67 @@ def test_process_finder_records_pid_and_background(tmp_path):
     assert store.get(SID)["pid"] == 4242
     store.record_event(ev("SessionStart", source="resume"), process_finder=lambda: (5150, False))
     assert (store.get(SID)["pid"], store.get(SID)["background"]) == (5150, False)
+
+
+def test_background_subagent_keeps_the_session_working_after_the_main_agent_stops():
+    """The devbox case: /data-analysis dispatched a subagent, the main agent's turn
+    ended (Stop -> ready), and the session read "ready" while the subagent ground on."""
+    t0 = datetime(2026, 8, 31, 5, 50, tzinfo=timezone.utc)
+    rec = {"state": READY, "updated_at": iso_at(t0, 8), "main_event_at": iso_at(t0, 0),
+           "agent_event_at": iso_at(t0, 8)}
+    # the last thing we heard came from the subagent -> still working
+    assert subagent_busy(rec) is True
+    assert effective_state(rec, t0 + timedelta(seconds=30)) == WORKING
+
+    # main thread speaks again (subagent returned, main is processing the result)
+    rec = {**rec, "state": WORKING, "updated_at": iso_at(t0, 20), "main_event_at": iso_at(t0, 20)}
+    assert subagent_busy(rec) is False
+    assert effective_state(rec, t0 + timedelta(seconds=30)) == WORKING
+
+    # ...and when it stops for real, ready means ready -- no timeout needed to get here
+    rec = {**rec, "state": READY, "updated_at": iso_at(t0, 25), "main_event_at": iso_at(t0, 25)}
+    assert subagent_busy(rec) is False
+    assert effective_state(rec, t0 + timedelta(seconds=30)) == READY
+
+    # a session that never spawned one is unaffected
+    assert subagent_busy({"state": READY, "main_event_at": iso_at(t0, 25)}) is False
+    # ended and inactive still win over a chatty subagent
+    ended = {"state": ENDED, "updated_at": iso_at(t0, 8), "agent_event_at": iso_at(t0, 8)}
+    assert effective_state(ended, t0 + timedelta(seconds=30)) == ENDED
+    dead = {"state": READY, "updated_at": iso_at(t0, 8), "agent_event_at": iso_at(t0, 8), "pid": 4242}
+    assert effective_state(dead, t0 + timedelta(seconds=30), alive=lambda pid: False) == INACTIVE
+
+
+def test_record_event_tracks_which_side_of_the_session_spoke(tmp_path):
+    store = RuntimeStore(tmp_path / "runtime")
+    t0 = datetime(2026, 8, 31, 5, 50, tzinfo=timezone.utc)
+    store.record_event(ev("Stop"), now=t0)
+    store.record_event(ev("PostToolUse", agent_id="agent-adc68b7f45dd523d9"), now=t0 + timedelta(seconds=8))
+    rec = store.get(SID)
+    # exactly the contradictory record observed on the devbox: a fresh PostToolUse
+    # that left the stored state at "ready" -- now recovered as working
+    assert (rec["state"], rec["last_event"]) == (READY, "PostToolUse")
+    assert rec["main_event_at"] == iso_at(t0, 0) and rec["agent_event_at"] == iso_at(t0, 8)
+    assert effective_state(rec, t0 + timedelta(seconds=20)) == WORKING
+
+    store.record_event(ev("Stop"), now=t0 + timedelta(seconds=30))
+    rec = store.get(SID)
+    assert rec["main_event_at"] == iso_at(t0, 30)
+    assert effective_state(rec, t0 + timedelta(seconds=40)) == READY
+
+
+def test_subagent_and_main_events_inside_the_same_second_are_still_ordered(tmp_path):
+    """Both hooks fire microseconds apart when a turn ends and a subagent keeps going.
+    Second-resolution timestamps made that comparison a coin toss."""
+    store = RuntimeStore(tmp_path / "runtime")
+    t0 = datetime(2026, 8, 31, 5, 50, 0, 120_000, tzinfo=timezone.utc)
+    store.record_event(ev("Stop"), now=t0)
+    store.record_event(ev("PostToolUse", agent_id="a1"), now=t0 + timedelta(microseconds=300_000))
+    rec = store.get(SID)
+    assert rec["main_event_at"][:19] == rec["agent_event_at"][:19]  # same wall-clock second
+    assert subagent_busy(rec) is True
+    assert effective_state(rec, t0 + timedelta(seconds=5)) == WORKING
+
+    # and the other way round: the main thread spoke last, so ready means ready
+    store.record_event(ev("Stop"), now=t0 + timedelta(microseconds=600_000))
+    assert subagent_busy(store.get(SID)) is False

@@ -48,6 +48,16 @@ def iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def iso_precise(dt: datetime) -> str:
+    """Like `iso`, but keeps microseconds.
+
+    Only `main_event_at` / `agent_event_at` use this. They exist to be *ordered*
+    against each other, and two hook processes fired by the same turn land well
+    inside one second -- truncating them would make the comparison a coin toss.
+    """
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def parse_iso(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -61,14 +71,31 @@ def transition(event: dict) -> tuple[str, str | None] | None:
     """Map one Claude Code hook event to (state, attention_reason).
 
     Returns None when the event carries no state information for the main
-    session (e.g. events emitted from inside a subagent) -- the record's
+    session (e.g. tool events emitted from inside a subagent) -- the record's
     `updated_at` is still touched in that case.
     """
     name = event.get("hook_event_name")
+    # Attention first, and *before* the subagent guard below: a permission prompt
+    # raised three levels down still blocks you, so it must reach the session that
+    # owns the subagent rather than being discarded with the rest of its chatter.
+    if name == "PermissionRequest":
+        reason = "question" if event.get("tool_name") == "AskUserQuestion" else "permission"
+        return NEEDS_YOU, reason
+    if name == "Notification":
+        kind = event.get("notification_type")
+        if kind == "permission_prompt":
+            return NEEDS_YOU, "permission"
+        if kind == "elicitation_dialog":
+            return NEEDS_YOU, "question"
+        if kind == "idle_prompt" and not event.get("agent_id"):
+            return READY, None
+        return None
     if name in ("SubagentStart", "SubagentStop"):
         return WORKING, None
     if event.get("agent_id"):
-        # Event emitted from inside a subagent (Task tool): keep the main session's state.
+        # Tool chatter from inside a subagent (Task tool): it says nothing about what
+        # the *main* agent is doing, so the stored state is left alone. That the
+        # subagent is still going is recovered in `effective_state` via `subagent_busy`.
         # NOTE: main-session events also carry `agent_type` (e.g. "claude"), so only
         # `agent_id` identifies a subagent -- verified against Claude Code 2.1.251.
         return None
@@ -76,23 +103,30 @@ def transition(event: dict) -> tuple[str, str | None] | None:
         return READY, None
     if name in _WORKING_EVENTS:
         return WORKING, None
-    if name == "PermissionRequest":
-        reason = "question" if event.get("tool_name") == "AskUserQuestion" else "permission"
-        return NEEDS_YOU, reason
-    if name == "Notification":
-        kind = event.get("notification_type")
-        if kind == "idle_prompt":
-            return READY, None
-        if kind == "permission_prompt":
-            return NEEDS_YOU, "permission"
-        if kind == "elicitation_dialog":
-            return NEEDS_YOU, "question"
-        return None
     if name == "Stop":
         return READY, None
     if name == "SessionEnd":
         return ENDED, None
     return None
+
+
+def subagent_busy(record: dict) -> bool:
+    """True when the newest event we saw for this session came from inside a subagent.
+
+    A subagent dispatched into the background outlives the turn that spawned it, so
+    the main agent's own `Stop` (-> ready) is not the whole story: the session looks
+    idle while the work you can see in the terminal is still running.
+
+    Comparing "when did we last hear from a subagent" against "when did we last hear
+    from the main thread" needs no timeout and no SubagentStop event. A long-running
+    tool call inside the subagent stays busy however long it takes, and the moment the
+    main thread speaks again its event is the newer one and its state is trusted again.
+    """
+    agent_at = parse_iso(record.get("agent_event_at"))
+    if agent_at is None:
+        return False
+    main_at = parse_iso(record.get("main_event_at"))
+    return main_at is None or agent_at > main_at
 
 
 def pid_alive(pid: int) -> bool:
@@ -124,6 +158,10 @@ def effective_state(record: dict, now: datetime | None = None, alive: Callable[[
     updated = parse_iso(record.get("updated_at"))
     if updated is None or now - updated > STALE_AFTER:
         return INACTIVE
+    if state == READY and subagent_busy(record):
+        # The main agent finished its turn but handed work to a subagent that is
+        # still running -- what you see in the terminal is work, not a prompt.
+        return WORKING
     return state
 
 
@@ -190,12 +228,17 @@ class RuntimeStore:
             "background": None,
             "last_event": None,
             "updated_at": iso(now),
+            "main_event_at": None,
+            "agent_event_at": None,
         }
         result = transition(event)
         if result is not None:
             record["state"], record["attention"] = result
         record["last_event"] = event.get("hook_event_name")
         record["updated_at"] = iso(now)
+        # Which side of the session spoke: the main thread, or one of its subagents.
+        # `subagent_busy` reads these back to tell "idle" from "busy below the surface".
+        record["agent_event_at" if event.get("agent_id") else "main_event_at"] = iso_precise(now)
         if event.get("cwd"):
             record["cwd"] = str(event["cwd"])
         if event.get("transcript_path"):
