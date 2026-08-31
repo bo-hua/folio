@@ -5,10 +5,15 @@
 const STATE_LABEL = { needs_you: 'Needs you', working: 'Working', ready: 'Ready', ended: 'Ended', inactive: 'Inactive', unknown: 'No runtime info' };
 const RAIL_GROUPS = [['needs_you', 'Needs you'], ['working', 'Working'], ['ready', 'Ready'], ['ended', 'Ended / inactive']];
 const POLL_MS = 4000;
+// Focus modes: which finished lifecycles the canvas leaves out, so what is live stays legible.
+const FOCUS_HIDES = { all: [], done: ['done'], donepark: ['done', 'parked'] };
+const FOCUS_ORDER = ['all', 'done', 'donepark'];
+const FOCUS_LABEL = { all: 'Showing everything', done: 'Hiding done cards', donepark: 'Hiding done and parked cards' };
 
 let OV = null, AREAS = [], CARDS = [], SESSIONS = [];
-const state = { cam: { x: 16, y: 8, s: 0.9 }, selected: null, detail: null, railFilter: 'all', allRepos: false, attnCursor: -1, resumeOpen: null };
+const state = { cam: { x: 16, y: 8, s: 0.9 }, selected: null, detail: null, railFilter: 'all', allRepos: false, attnCursor: -1, resumeOpen: null, focus: 'all' };
 const collapsed = new Set();
+let VISIBLE = null; // ids the filter keeps, or null when nothing is filtered
 
 // ------------------------------------------------------------------ helpers
 const $ = (s, r = document) => r.querySelector(s);
@@ -33,7 +38,7 @@ const kidsOf = id => CARDS.filter(c => c.parent === id);
 const topOf = a => CARDS.filter(c => !c.parent && c.area === a.id);
 const sessOf = id => SESSIONS.filter(s => s.item === id);
 const sessById = id => SESSIONS.find(s => s.id === id);
-const parents = () => CARDS.filter(c => kidsOf(c.id).length);
+const parents = () => CARDS.filter(c => isVisible(c) && visKidsOf(c.id).length);
 const lifecycle = c => c.lifecycle || 'idea';
 // What a session is called: your own name for it, else the title Claude Code gave
 // it (read live from its transcript), else the id.
@@ -42,7 +47,29 @@ const sessTip = s => [sessTitle(s), s.prompt && `last prompt: ${s.prompt}`, s.id
 function ancestors(id) { const out = []; let c = cardById(id); while (c && c.parent) { out.unshift(c.parent); c = cardById(c.parent); } return out; }
 function areaOf(id) { let c = cardById(id); while (c && c.parent) c = cardById(c.parent); return c ? areaById(c.area) : null; }
 function isDescendant(id, ofId) { let c = cardById(id); while (c && c.parent) { if (c.parent === ofId) return true; c = cardById(c.parent); } return false; }
-function descendantCount(id) { return kidsOf(id).reduce((n, k) => n + 1 + descendantCount(k.id), 0); }
+function descendantCount(id, vis = false) { return (vis ? visKidsOf(id) : kidsOf(id)).reduce((n, k) => n + 1 + descendantCount(k.id, vis), 0); }
+// --- the focus filter. Structure (kidsOf/topOf) stays whole -- moves, deletes and
+// undo must see the real tree; only what the canvas draws is filtered.
+const isVisible = c => !VISIBLE || VISIBLE.has(c.id);
+const visKidsOf = id => kidsOf(id).filter(isVisible);
+const visTopOf = a => topOf(a).filter(isVisible);
+function computeVisible() {
+  const hide = new Set(FOCUS_HIDES[state.focus] || []);
+  if (!hide.size) { VISIBLE = null; return; }
+  VISIBLE = new Set();
+  // A finished card still shows when something inside it survives, or one of its own
+  // sessions needs you -- the filter must never swallow a card that is asking for you.
+  const keep = c => {
+    const kidsKept = kidsOf(c.id).map(keep).includes(true); // map, not some: every child is visited
+    const v = kidsKept || !hide.has(lifecycle(c)) || sessOf(c.id).some(s => s.state === 'needs_you');
+    if (v) VISIBLE.add(c.id);
+    return v;
+  };
+  CARDS.filter(c => !c.parent).forEach(keep);
+  // whatever you have open stays on the canvas, filter or not, with its ancestors
+  if (state.selected && cardById(state.selected)) { VISIBLE.add(state.selected); ancestors(state.selected).forEach(id => VISIBLE.add(id)); }
+}
+const hiddenCount = () => VISIBLE ? CARDS.length - VISIBLE.size : 0;
 function timeAgo(iso) {
   if (!iso) return '—';
   const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
@@ -52,12 +79,13 @@ function shortPath(p) { if (!p) return ''; const m = p.match(/^\/(?:Users|home)\
 function railState(s) { return ['needs_you', 'working', 'ready'].includes(s.state) ? s.state : 'ended'; }
 function isEditing() { const a = document.activeElement; return !!(a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT')); }
 function persist() {
-  try { localStorage.setItem('folio.collapsed', JSON.stringify([...collapsed])); localStorage.setItem('folio.cam', JSON.stringify(state.cam)); } catch (e) { /* private mode etc. */ }
+  try { localStorage.setItem('folio.collapsed', JSON.stringify([...collapsed])); localStorage.setItem('folio.cam', JSON.stringify(state.cam)); localStorage.setItem('folio.focus', state.focus); } catch (e) { /* private mode etc. */ }
 }
 function restore() {
   try {
     (JSON.parse(localStorage.getItem('folio.collapsed') || '[]')).forEach(id => collapsed.add(id));
     const cam = JSON.parse(localStorage.getItem('folio.cam') || 'null'); if (cam && typeof cam.s === 'number') state.cam = cam;
+    const f = localStorage.getItem('folio.focus'); if (f && FOCUS_HIDES[f]) state.focus = f;
   } catch (e) { /* ignore */ }
 }
 
@@ -148,7 +176,7 @@ function compStrip(kids) {
 }
 function sessChip(s) { return h('span', { class: `sess ${s.state}`, 'data-sid': s.id, title: `${sessTitle(s)} — ${STATE_LABEL[s.state] || s.state}${s.attention ? ' · ' + s.attention : ''}${s.prompt ? `\n\nlast prompt: ${s.prompt}` : ''}` }, h('i', { class: `dot ${s.state}` }), sessTitle(s)); }
 function cardEl(c, depth = 0) {
-  const kids = kidsOf(c.id), sess = sessOf(c.id), lc = lifecycle(c), ag = attn(c.id);
+  const kids = visKidsOf(c.id), hiddenKids = kidsOf(c.id).length - kids.length, sess = sessOf(c.id), lc = lifecycle(c), ag = attn(c.id);
   const isCollapsed = kids.length > 0 && collapsed.has(c.id);
   const loud = ag.ownNeeds > 0 || (isCollapsed && ag.descNeeds > 0); // attention shows where it is, or rolled up when hidden
   const el = h('div', { class: `card ${lc} ${kids.length ? 'has-kids' : ''} ${isCollapsed ? 'collapsed' : ''} ${loud ? 'attn' : ''} ${state.selected === c.id ? 'selected' : ''}`, 'data-id': c.id, 'data-depth': String(depth), tabindex: '0' });
@@ -156,7 +184,9 @@ function cardEl(c, depth = 0) {
   const head = h('div', { class: 'card-head' }, h('i', { class: `glyph ${lc}`, title: lc }), h('span', { class: 'title' }, c.name));
   if (isCollapsed && ag.descNeeds) head.appendChild(h('span', { class: 'badge attn' }, h('i', { class: 'dot needs_you' }), ag.descNeeds === 1 ? 'needs you' : `${ag.descNeeds} need you`));
   else if (isCollapsed && ag.descWorking) head.appendChild(h('span', { class: 'badge work' }, h('i', { class: 'dot working' }), 'working'));
-  if (kids.length) head.appendChild(h('button', { class: 'tog', 'data-act': 'toggle', title: isCollapsed ? `Show ${descendantCount(c.id)} inside` : 'Collapse this card' }, String(kids.length), chevron()));
+  const hiddenNote = hiddenKids ? ` · ${hiddenKids} hidden by the filter` : '';
+  if (kids.length) head.appendChild(h('button', { class: 'tog', 'data-act': 'toggle', title: (isCollapsed ? `Show ${descendantCount(c.id, true)} inside` : 'Collapse this card') + hiddenNote }, String(kids.length), chevron()));
+  else if (hiddenKids) head.appendChild(h('span', { class: 'tog hid', title: `${hiddenKids} card${hiddenKids === 1 ? '' : 's'} inside — hidden by the filter` }, `${hiddenKids} hidden`));
   el.appendChild(head);
   if (sess.length) {
     const row = h('div', { class: 'card-row' });
@@ -169,13 +199,18 @@ function cardEl(c, depth = 0) {
   return el;
 }
 function areaEl(a) {
-  const cards = topOf(a), aa = areaAttn(a), cols = colsFor(cards.length);
-  const meta = h('span', { class: 'area-meta' }, `${a.count} card${a.count === 1 ? '' : 's'}`);
+  const cards = visTopOf(a), aa = areaAttn(a), cols = colsFor(cards.length);
+  const shown = VISIBLE ? CARDS.filter(c => c.area === a.id && isVisible(c)).length : a.count;
+  const meta = h('span', { class: 'area-meta' }, shown === a.count ? `${a.count} card${a.count === 1 ? '' : 's'}` : `${shown} of ${a.count} cards`);
   if (aa.needs) meta.appendChild(h('span', { class: 'a' }, h('i', { class: 'dot needs_you' }), `${aa.needs} need${aa.needs === 1 ? 's' : ''} you`));
   if (aa.working) meta.appendChild(h('span', { class: 'w' }, h('i', { class: 'dot working' }), `${aa.working} working`));
   const colEls = Array.from({ length: cols }, () => h('div', { class: 'col' }));
   cards.forEach((c, i) => colEls[columnOf(i, cols)].appendChild(cardEl(c, 0)));
-  if (!cards.length) colEls[0].appendChild(h('div', { class: 'empty' }, a.count ? 'Every card here is nested under a parent in another Area.' : 'No cards yet — press + or drop a session here'));
+  const hiddenTop = topOf(a).length - cards.length;
+  if (!cards.length) colEls[0].appendChild(h('div', { class: 'empty' },
+    hiddenTop ? `${hiddenTop} card${hiddenTop === 1 ? '' : 's'} here, all hidden by the filter.`
+      : a.count ? 'Every card here is nested under a parent in another Area.'
+        : 'No cards yet — press + or drop a session here'));
   return h('section', { class: 'area', 'data-area': a.id },
     h('header', { class: 'area-head' }, h('h2', { class: 'area-title' }, a.name), meta,
       h('button', { class: 'area-del', 'data-act': 'delete-area', title: 'Delete this Area and every card in it' }, 'Delete area'),
@@ -183,6 +218,7 @@ function areaEl(a) {
     h('div', { class: 'cols' }, ...colEls));
 }
 function render() {
+  computeVisible();
   world.innerHTML = '';
   AREAS.forEach(a => world.appendChild(areaEl(a)));
   world.appendChild(h('i', { class: 'insline', id: 'insline' }));
@@ -190,8 +226,20 @@ function render() {
   else { const es = $('#emptyState'); if (es) es.remove(); }
   renderTopbar(); renderRail(); renderInspector(); renderAttnPill();
 }
+function renderFocus() {
+  const hid = hiddenCount();
+  $$('#focus button').forEach(b => b.classList.toggle('on', b.dataset.focus === state.focus));
+  const n = $('#focusCount');
+  n.hidden = !hid;
+  n.textContent = `${hid} hidden`;
+  n.title = `${hid} card${hid === 1 ? '' : 's'} hidden by the filter — click to show everything.\nA card whose session needs you is never hidden.`;
+  $$('.legend span[data-lc]').forEach(el => el.classList.toggle('off', (FOCUS_HIDES[state.focus] || []).includes(el.dataset.lc)));
+}
 function renderTopbar() {
-  $('#summary').textContent = `${AREAS.length} area${AREAS.length === 1 ? '' : 's'} · ${CARDS.length} card${CARDS.length === 1 ? '' : 's'} · ${SESSIONS.length} session${SESSIONS.length === 1 ? '' : 's'}`;
+  const shown = VISIBLE ? VISIBLE.size : CARDS.length;
+  const cards = shown === CARDS.length ? `${CARDS.length} card${CARDS.length === 1 ? '' : 's'}` : `${shown} of ${CARDS.length} cards`;
+  $('#summary').textContent = `${AREAS.length} area${AREAS.length === 1 ? '' : 's'} · ${cards} · ${SESSIONS.length} session${SESSIONS.length === 1 ? '' : 's'}`;
+  renderFocus();
   const ps = parents(); $('#collapseAll').textContent = ps.length && ps.every(p => collapsed.has(p.id)) ? 'Expand all' : 'Collapse all';
   const repo = OV && OV.repo, el = $('#repo');
   if (repo) { el.textContent = repo.error ? `⚠ ${repo.error}` : `${shortPath(repo.path)} · ${repo.worktrees.length} worktree${repo.worktrees.length === 1 ? '' : 's'}`; el.classList.toggle('err', !!repo.error); el.title = repo.error || (repo.worktrees || []).map(w => `${w.branch || '(detached)'}  ${w.path}`).join('\n'); }
@@ -266,8 +314,8 @@ function renderInspector() {
   }
   body.appendChild(ss);
   // children
-  const ks = h('div', { class: 'sec' }, h('h3', {}, 'Children', h('span', { class: 'n' }, String(kids.length)), kids.length ? h('button', { class: 'act', 'data-act': 'toggle-kids' }, collapsed.has(c.id) ? 'Expand' : 'Collapse') : ''));
-  for (const k of kids) { const ka = attn(k.id); ks.appendChild(h('button', { class: 'ins-kid', style: 'width:100%;text-align:left', 'data-act': 'reveal', 'data-id': k.id }, h('i', { class: `glyph ${lifecycle(k)}` }), h('span', {}, k.name), h('span', { class: 'st' }, ka.needs ? h('i', { class: 'dot needs_you' }) : ka.working ? h('i', { class: 'dot working' }) : lifecycle(k)), h('span', { class: 'arrow' }, '›'))); }
+  const ks = h('div', { class: 'sec' }, h('h3', {}, 'Children', h('span', { class: 'n' }, String(kids.length)), visKidsOf(c.id).length ? h('button', { class: 'act', 'data-act': 'toggle-kids' }, collapsed.has(c.id) ? 'Expand' : 'Collapse') : ''));
+  for (const k of kids) { const ka = attn(k.id); ks.appendChild(h('button', { class: `ins-kid${isVisible(k) ? '' : ' dim'}`, style: 'width:100%;text-align:left', 'data-act': 'reveal', 'data-id': k.id, title: isVisible(k) ? null : 'Hidden by the current filter — opening it brings it back onto the canvas' }, h('i', { class: `glyph ${lifecycle(k)}` }), h('span', {}, k.name), h('span', { class: 'st' }, ka.needs ? h('i', { class: 'dot needs_you' }) : ka.working ? h('i', { class: 'dot working' }) : lifecycle(k)), h('span', { class: 'arrow' }, '›'))); }
   ks.appendChild(h('form', { class: 'ins-add', 'data-act': 'add-kid-form' }, h('input', { placeholder: 'New child idea…', 'aria-label': 'New child idea' }), h('button', { class: 'mini', type: 'submit' }, 'Add')));
   body.appendChild(ks);
   // AI state
@@ -526,6 +574,14 @@ $('#inspector').addEventListener('submit', e => {
 });
 
 // ------------------------------------------------------------------ top bar / zoom / keys / boot
+function setFocus(mode, announce = true) {
+  if (!FOCUS_HIDES[mode] || mode === state.focus) return;
+  state.focus = mode; persist(); render();
+  const hid = hiddenCount();
+  if (announce) hint(`${FOCUS_LABEL[mode]}${hid ? ` — ${hid} card${hid === 1 ? '' : 's'} out of sight` : ''}`);
+}
+$('#focus').addEventListener('click', e => { const b = e.target.closest('button[data-focus]'); if (b) setFocus(b.dataset.focus); });
+$('#focusCount').addEventListener('click', () => setFocus('all'));
 $('#attnPill').addEventListener('click', jumpNext);
 $('#collapseAll').addEventListener('click', () => { const ps = parents(); const all = ps.every(p => collapsed.has(p.id)); ps.forEach(p => all ? collapsed.delete(p.id) : collapsed.add(p.id)); persist(); render(); if (all) $$('.kids').forEach(k => k.classList.add('opening')); });
 $('#newIdeaBtn').addEventListener('click', () => { const inbox = AREAS.find(a => a.name.toLowerCase() === 'inbox') || AREAS[0]; if (!inbox) { toast('Create an Area first (+ Area)', null, { error: true }); return; } newCard({ area: inbox.id }); });
@@ -537,6 +593,7 @@ document.addEventListener('keydown', e => {
   if (e.target.matches('input, textarea')) return;
   if (e.key === 'Escape') { if (state.selected) select(null); }
   if (e.key === 'j' || e.key === 'J') jumpNext();
+  if (e.key === 'h' || e.key === 'H') setFocus(FOCUS_ORDER[(FOCUS_ORDER.indexOf(state.focus) + 1) % FOCUS_ORDER.length]);
   if (e.key === 'f' || e.key === 'F') $('#zoomFit').click();
   if (e.key === 'n' || e.key === 'N') $('#newIdeaBtn').click();
   if (e.key === '=' || e.key === '+') $('#zoomIn').click();

@@ -16,6 +16,12 @@
     <span class="summary" id="summary">Loading…</span>
     <span class="stale" id="stale" hidden title="This process is older than folio's code on disk. Stop it and run `folio serve` again.">server is running older code — restart it</span>
     <button class="tb-btn" id="attnPill" title="Jump to the next card that needs you (J)"></button>
+    <div class="focus" id="focus" role="group" aria-label="Which cards to show">
+      <button data-focus="all" title="Show every card">All</button>
+      <button data-focus="done" title="Hide cards you have marked done. A done card stays if something open is nested inside it, or one of its sessions needs you.">Hide done</button>
+      <button data-focus="donepark" title="Hide done and parked cards — leaves only what is live, being worked on, or still an idea.">Focus</button>
+    </div>
+    <button class="focus-n" id="focusCount" hidden></button>
     <button class="tb-btn" id="collapseAll" title="Collapse or expand every card that has children">Collapse all</button>
     <span class="repo" id="repo" title="Configured repository"></span>
     <button class="tb-btn" id="newAreaBtn" title="Create an Area (a directory)">+ Area</button>
@@ -31,13 +37,13 @@
       <label class="chip-btn toggle" title="Also list sessions running outside the configured repository"><input type="checkbox" id="allRepos"> other repos</label>
     </div>
     <div class="rail-body" id="rail"></div>
-    <div class="rail-foot"><span>Drag a session onto a card to attach it; onto empty canvas to detach.</span><span class="k"><kbd>J</kbd> next</span></div>
+    <div class="rail-foot"><span>Drag a session onto a card to attach it; onto empty canvas to detach.</span><span class="k"><kbd>J</kbd> next<kbd>H</kbd> hide</span></div>
   </aside>
 
   <main class="stage" id="stage">
     <div class="world" id="world"></div>
     <div class="legend" aria-hidden="true">
-      <span><i class="glyph idea"></i>idea</span><span><i class="glyph active"></i>active</span><span><i class="glyph done"></i>done</span><span><i class="glyph parked"></i>parked</span>
+      <span data-lc="idea"><i class="glyph idea"></i>idea</span><span data-lc="active"><i class="glyph active"></i>active</span><span data-lc="done"><i class="glyph done"></i>done</span><span data-lc="parked"><i class="glyph parked"></i>parked</span>
       <i class="sep"></i>
       <span><i class="dot needs_you"></i>needs you</span><span><i class="dot working"></i>working</span><span><i class="dot ready"></i>ready</span><span><i class="dot ended"></i>ended</span>
     </div>

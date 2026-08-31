@@ -156,9 +156,16 @@ def test_delete_area_removes_directory_and_items(server):
 
 def test_static_shell_and_bind_guard(server):
     with urllib.request.urlopen(server["url"] + "/", timeout=10) as res:
-        assert res.status == 200 and b"<title>folio</title>" in res.read()
+        assert res.status == 200 and res.headers["Content-Type"].startswith("text/html")
+        shell = res.read()
+        assert b"<title>folio</title>" in shell
+        # the focus filter is chrome the page must actually carry
+        for mode in (b'data-focus="all"', b'data-focus="done"', b'data-focus="donepark"', b'id="focusCount"'):
+            assert mode in shell
     with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
-        assert res.status == 200 and b"renderRail" in res.read()
+        assert res.status == 200 and res.headers["Content-Type"].startswith(("application/javascript", "text/javascript"))
+        app = res.read()
+        assert b"renderRail" in app and b"computeVisible" in app
     with urllib.request.urlopen(server["url"] + "/static/favicon.svg", timeout=10) as res:
         assert res.status == 200 and res.headers["Content-Type"] == "image/svg+xml"
         assert b"<svg" in res.read()

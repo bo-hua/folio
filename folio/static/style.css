@@ -71,6 +71,13 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .tb-btn:hover{background:var(--raised);border-color:var(--line-2)}
 .tb-btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .tb-btn.primary:hover{filter:brightness(1.05)}
+/* focus filter: which finished cards the canvas leaves out */
+.focus{display:flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:8px;background:var(--raised);flex:none}
+.focus button{padding:3px 9px;border-radius:6px;font-size:11.5px;font-weight:500;color:var(--muted);white-space:nowrap;transition:background .15s,color .15s}
+.focus button:hover{color:var(--ink)}
+.focus button.on{background:var(--surface);color:var(--ink);box-shadow:var(--shadow-1)}
+.focus-n{font-size:11.5px;color:var(--muted);padding:3px 8px;border-radius:999px;border:1px dashed var(--line-2);white-space:nowrap;flex:none;transition:color .15s,border-color .15s}
+.focus-n:hover{color:var(--ink);border-color:var(--muted);border-style:solid}
 
 /* ---------- rail ---------- */
 .rail{background:var(--surface);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
@@ -171,6 +178,7 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .card .badge.work{background:var(--work-soft);color:var(--work)}
 .tog{flex:none;display:inline-flex;align-items:center;gap:4px;padding:2px 7px 2px 8px;border-radius:999px;font-size:11px;font-weight:500;color:var(--accent-ink);background:var(--accent-soft);margin-top:-1px;transition:background .15s}
 .tog:hover{filter:brightness(.96)}
+.tog.hid{background:transparent;border:1px dashed var(--line-2);color:var(--faint);font-weight:400;cursor:default}
 .tog svg{width:10px;height:10px;transition:transform .2s var(--ease);transform:rotate(90deg)}
 .card.collapsed .tog svg{transform:rotate(0)}
 .card-row{display:flex;align-items:center;gap:6px;margin-top:10px;flex-wrap:wrap}
@@ -218,6 +226,7 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .legend{position:absolute;left:16px;bottom:16px;display:flex;gap:14px;align-items:center;padding:6px 12px;background:var(--surface);border:1px solid var(--line);border-radius:9px;box-shadow:var(--shadow-1);font-size:11px;color:var(--muted);z-index:6}
 .legend span{display:inline-flex;align-items:center;gap:5px}
 .legend .sep{width:1px;height:14px;background:var(--line)}
+.legend span.off{opacity:.3;text-decoration:line-through;text-decoration-color:var(--line-2)}
 .hintbar{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);padding:6px 12px;border-radius:999px;background:var(--ink);color:var(--surface);font-size:11.5px;opacity:0;transition:opacity .25s;pointer-events:none;z-index:7;white-space:nowrap}
 .hintbar.show{opacity:.92}
 .summary{color:var(--muted);font-size:12.5px;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -264,6 +273,7 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .mini.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .ins-kid{display:flex;align-items:center;gap:8px;padding:6px 6px;margin:0 -6px;border-radius:7px;font-size:12.5px;color:var(--ink)}
 .ins-kid:hover{background:var(--raised)}
+.ins-kid.dim{opacity:.5}
 .ins-kid .st{margin-left:auto;font-size:11px;color:var(--muted)}
 .ins-kid .arrow{color:var(--faint)}
 .ins-add{display:flex;gap:6px;margin-top:6px}
