@@ -245,8 +245,9 @@ never approve, deny, block or otherwise alter a permission decision.
 What is stored per session (`runtime/sessions/<id>.json`):
 `session_id`, `state` (working / needs_you / ready / ended), `attention`
 (permission / question), `last_event`, `updated_at`, `first_seen`, `cwd`,
-`transcript_path`, `permission_mode`, best-effort `pid`. **Never** prompts,
-responses, tool arguments, transcript contents or code.
+`transcript_path`, `permission_mode`, best-effort `pid`, and `main_event_at` /
+`agent_event_at` (which side of the session we last heard from -- see *Subagents*
+below). **Never** prompts, responses, tool arguments, transcript contents or code.
 
 State mapping (Claude Code 2.1.x hook events):
 
@@ -258,9 +259,30 @@ State mapping (Claude Code 2.1.x hook events):
 | `PermissionRequest` with `tool_name == AskUserQuestion`, `Notification/elicitation_dialog` | **needs you** · question |
 | `SessionEnd` | ended |
 | no events for 12 h, or the recorded `pid` is gone | inactive (derived) |
+| main agent idle but a subagent still running | working (derived) |
 
-Events emitted from inside subagents (they carry `agent_id`) do not change the
-main session's state.
+#### Subagents
+
+Tool events emitted from inside a subagent carry `agent_id`. They say nothing about
+what the *main* agent is doing, so they never overwrite the stored state.
+
+That alone is not enough. A subagent dispatched into the background outlives the
+turn that spawned it: the main agent stops, emits `Stop`, and the session is stored
+as **ready** while the work you can watch in the terminal is still running. So the
+hook also records *which side of the session spoke last* -- `main_event_at` versus
+`agent_event_at` -- and a stored `ready` whose newest event came from a subagent is
+reported as **working**.
+
+The comparison is deliberately a comparison and not a timeout: a subagent that
+spends ten minutes inside one query stays working for all ten, and the instant the
+main thread speaks again its event is the newer one and its own state is trusted
+again. Nothing can wedge: if neither side ever speaks again the record goes stale
+and falls to *inactive* on the usual 12-hour rule.
+
+**Attention is exempt.** A `PermissionRequest` or a permission/elicitation
+`Notification` is mapped *before* the `agent_id` check, so a prompt raised three
+levels down still surfaces as **needs you** on the session that owns it. A filter
+that swallows an alert is worse than no filter.
 
 ### Session titles (derived, never stored)
 
