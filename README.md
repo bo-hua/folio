@@ -149,7 +149,7 @@ this (server start time vs. the newest mtime under `folio/`) and shows a banner.
 
 Other commands: `folio worktrees` (what git reports), `folio sessions [--all]`
 (what the hook has observed), `folio hooks print|install|uninstall [--dry-run]`,
-`folio tidy [--dry-run]` (rename item files whose slug drifted from their name).
+`folio tidy [--dry-run]` (rename item files whose filename drifted from their name).
 
 Data directory: `~/.cc-workspace` by default, or `--data-dir PATH` / `FOLIO_DATA_DIR=PATH`.
 
@@ -192,16 +192,20 @@ Data directory: `~/.cc-workspace` by default, or `--data-dir PATH` / `FOLIO_DATA
 
 Back up `items/`; `runtime/` is disposable.
 
-The filename is a slug of `name` and follows it: rename a card and the file is
-renamed with it, so the directory always reads like the card list. Only `id`
-identifies an item, so a filename is safe to change by hand — `folio tidy` puts
-any that have drifted back in step (`--dry-run` first to see the moves).
+The file is called what the card is called — `Clarify card status.md`, spaces
+and capitals intact — and follows it: rename a card and the file is renamed with
+it, so the directory reads like the card list in any Markdown editor. Only the
+characters a filesystem or Obsidian refuses are replaced (`:` becomes ` - `, and
+`/ \ < > " | ? * [ ] # ^` become spaces), and a very long name is trimmed at a
+word boundary. Only `id` identifies an item, so a filename is safe to change by
+hand — `folio tidy` puts any that have drifted back in step (`--dry-run` first
+to see the moves).
 
 ### Item file
 
 ```markdown
 ---
-id: k7m2p9xw                       # stable, opaque; filename is just a readable slug
+id: k7m2p9xw                       # stable, opaque; the filename carries no meaning
 name: Better long-term ranking objective
 created: '2026-08-29T18:30:00-07:00'
 updated: '2026-08-29T19:02:11-07:00'

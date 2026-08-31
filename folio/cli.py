@@ -28,7 +28,7 @@ def cmd_init(args) -> int:
 
 
 def cmd_tidy(args) -> int:
-    """Rename item files whose slug drifted from the item's name."""
+    """Rename item files whose filename drifted from the item's name."""
     from .items import ItemStore
 
     data_dir = resolve_data_dir(args.data_dir)
@@ -172,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--repo")
     p.set_defaults(func=cmd_worktrees)
 
-    p = sub.add_parser("tidy", parents=[common], help="rename item files whose slug no longer matches their name")
+    p = sub.add_parser("tidy", parents=[common], help="rename item files whose filename no longer matches their name")
     p.add_argument("--dry-run", action="store_true", help="show what would be renamed without touching anything")
     p.set_defaults(func=cmd_tidy)
 

@@ -54,7 +54,7 @@ def test_end_to_end_flow(server):
     # notes edit round-trips and touches only the Notes section
     status, detail = call("PATCH", f"/api/items/{parent['id']}", {"notes": "edited notes", "context": [{"title": "Design doc", "ref": "https://example.com/doc"}]})
     assert status == 200 and detail["notes"] == "edited notes" and detail["context"][0]["ref"] == "https://example.com/doc"
-    md = (cfg.items_dir / "Ranking" / "long-term-objective.md").read_text()
+    md = (cfg.items_dir / "Ranking" / "Long-term objective.md").read_text()
     assert "edited notes" in md and "https://example.com/doc" in md
 
     # runtime: two sessions inside the repo's worktrees, one outside
@@ -118,7 +118,7 @@ def test_end_to_end_flow(server):
 
     # detach persists
     assert call("DELETE", f"/api/items/{parent['id']}/sessions/s-unknown")[0] == 200
-    assert "s-unknown" not in (cfg.items_dir / "Ranking" / "long-term-objective.md").read_text()
+    assert "s-unknown" not in (cfg.items_dir / "Ranking" / "Long-term objective.md").read_text()
 
     # guard rails
     assert call("PATCH", f"/api/items/{parent['id']}", {"parent": child["id"]})[0] == 400  # cycle
@@ -135,13 +135,13 @@ def test_renaming_a_card_renames_its_file(server):
     call, cfg = server["call"], server["config"]
     status, item = call("POST", "/api/items", {"name": "Untitled idea", "area": "Ranking"})
     assert status == 201
-    assert (cfg.items_dir / "Ranking" / "untitled-idea.md").exists()
+    assert (cfg.items_dir / "Ranking" / "Untitled idea.md").exists()
 
     status, detail = call("PATCH", f"/api/items/{item['id']}", {"name": "Clarify card status"})
     assert status == 200 and detail["name"] == "Clarify card status"
-    assert detail["path"].endswith("Ranking/clarify-card-status.md")
-    assert not (cfg.items_dir / "Ranking" / "untitled-idea.md").exists()
-    assert [p.name for p in (cfg.items_dir / "Ranking").glob("*.md")] == ["clarify-card-status.md"]
+    assert detail["path"].endswith("Ranking/Clarify card status.md")
+    assert not (cfg.items_dir / "Ranking" / "Untitled idea.md").exists()
+    assert [p.name for p in (cfg.items_dir / "Ranking").glob("*.md")] == ["Clarify card status.md"]
 
     # and the item is still reachable by id, with its notes intact
     assert call("GET", f"/api/items/{item['id']}")[1]["name"] == "Clarify card status"
