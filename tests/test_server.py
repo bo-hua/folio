@@ -299,3 +299,26 @@ def test_note_editor_is_served_and_wired_into_the_page(server):
         css = res.read().decode()
     for rule in (".md-doc{", ".md-doc li.task{", ".md-src{"):
         assert rule in css
+
+
+def test_typing_a_note_is_not_a_canvas_shortcut(server):
+    """The canvas keys (j, h, f, n, -, =) must stand aside for the note editor.
+    It is a contenteditable, not an <input>, so guarding on tag name alone let
+    typing "- " zoom the canvas out."""
+    with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
+        js = res.read().decode()
+    guard = next(l for l in js.splitlines() if "matches('input, textarea')" in l)
+    assert "isContentEditable" in guard
+    # the poll must leave a half-written note alone for the same reason
+    editing = next(l for l in js.splitlines() if l.startswith("function isEditing()"))
+    assert "isContentEditable" in editing
+
+
+def test_the_placeholder_gets_out_of_the_way(server):
+    """Right after "- " there is a bullet but no text yet. The hint has to go:
+    emptiness is about structure, not just characters."""
+    with urllib.request.urlopen(server["url"] + "/static/editor.js", timeout=10) as res:
+        js = res.read().decode()
+    blank = next(l for l in js.splitlines() if "const blank = ()" in l)
+    for tag in ("ul", "ol", "blockquote", "input"):
+        assert tag in blank

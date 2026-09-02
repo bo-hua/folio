@@ -371,7 +371,9 @@ var NoteEditor = (function () {
     const text = () => (mode === 'source' ? src.value.trim() : htmlToMd(doc));
     const dirty = () => text() !== saved;
     const setStatus = s => { status.textContent = s; };
-    const showPlaceholder = () => doc.classList.toggle('is-empty', !doc.textContent.trim() && !doc.querySelector('input,img,hr'));
+    // Started counts as started: a bullet with nothing in it yet is not an empty note.
+    const blank = () => !doc.textContent.trim() && !doc.querySelector('ul,ol,pre,blockquote,h1,h2,h3,h4,h5,h6,input,img,hr');
+    const showPlaceholder = () => doc.classList.toggle('is-empty', blank());
     const grow = () => {
       src.style.height = 'auto';
       src.style.height = Math.min(Math.max(src.scrollHeight + 2, 132), Math.round(window.innerHeight * 0.5)) + 'px';

@@ -632,7 +632,7 @@ $('#zoomIn').addEventListener('click', () => zoomAt(stage.clientWidth / 2, stage
 $('#zoomOut').addEventListener('click', () => zoomAt(stage.clientWidth / 2, stage.clientHeight / 2, .8));
 $('#zoomFit').addEventListener('click', () => fitRect(workspaceRect(), 40));
 document.addEventListener('keydown', e => {
-  if (e.target.matches('input, textarea')) return;
+  if (e.target.matches('input, textarea') || e.target.isContentEditable) return;   // never steal a keystroke from a field
   if (e.key === 'Escape') { if (state.selected) select(null); }
   if (e.key === 'j' || e.key === 'J') jumpNext();
   if (e.key === 'h' || e.key === 'H') setFocus(FOCUS_ORDER[(FOCUS_ORDER.indexOf(state.focus) + 1) % FOCUS_ORDER.length]);
