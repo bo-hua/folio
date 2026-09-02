@@ -289,3 +289,54 @@ def test_sessions_carry_the_title_claude_code_gave_them(server, tmp_path, monkey
     # nothing derived leaks into the Markdown you own
     files = list((cfg.items_dir / "Ranking").glob("*.md"))
     assert files and all("long-term ranking objective" not in p.read_text() for p in files)
+
+
+def test_note_editor_is_served_and_wired_into_the_page(server):
+    """Notes are edited as formatted text and stored as Markdown: the editor is a
+    real asset the shell loads, and the notes section is built from it rather than
+    from a bare textarea."""
+    with urllib.request.urlopen(server["url"] + "/static/editor.js", timeout=10) as res:
+        assert res.status == 200 and res.headers["Content-Type"].startswith(("application/javascript", "text/javascript"))
+        js = res.read().decode()
+    # Markdown is the wire format on both sides of the editing surface
+    for fn in ("function mdToHtml(", "function htmlToMd(", "function blockRules(", "function inlineRules("):
+        assert fn in js
+    assert "contentEditable = 'true'" in js          # you type into formatted text, not into syntax
+    for cmd in ("insertUnorderedList", "insertOrderedList", "'indent'", "'outdent'"):
+        assert cmd in js                             # native list handling keeps Enter/Tab on the undo stack
+    assert "/^[-*+]\\s$/" in js                      # "- " is what turns a line into a bullet
+    with urllib.request.urlopen(server["url"] + "/", timeout=10) as res:
+        shell = res.read()
+    assert b'<script src="/static/editor.js">' in shell  # loaded before app.js, which uses it
+    assert shell.index(b"/static/editor.js") < shell.index(b"/static/app.js")
+    with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
+        app_js = res.read().decode()
+    assert "NoteEditor.create(" in app_js
+    assert "'data-act': 'notes'" not in app_js  # the editor owns saving now, not the blur handler
+    with urllib.request.urlopen(server["url"] + "/static/style.css", timeout=10) as res:
+        css = res.read().decode()
+    for rule in (".md-doc{", ".md-doc li.task{", ".md-src{"):
+        assert rule in css
+
+
+def test_typing_a_note_is_not_a_canvas_shortcut(server):
+    """The canvas keys (j, h, f, n, -, =) must stand aside for the note editor.
+    It is a contenteditable, not an <input>, so guarding on tag name alone let
+    typing "- " zoom the canvas out."""
+    with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
+        js = res.read().decode()
+    guard = next(l for l in js.splitlines() if "matches('input, textarea')" in l)
+    assert "isContentEditable" in guard
+    # the poll must leave a half-written note alone for the same reason
+    editing = next(l for l in js.splitlines() if l.startswith("function isEditing()"))
+    assert "isContentEditable" in editing
+
+
+def test_the_placeholder_gets_out_of_the_way(server):
+    """Right after "- " there is a bullet but no text yet. The hint has to go:
+    emptiness is about structure, not just characters."""
+    with urllib.request.urlopen(server["url"] + "/static/editor.js", timeout=10) as res:
+        js = res.read().decode()
+    blank = next(l for l in js.splitlines() if "const blank = ()" in l)
+    for tag in ("ul", "ol", "blockquote", "input"):
+        assert tag in blank
