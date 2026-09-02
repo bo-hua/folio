@@ -227,10 +227,19 @@ function areaEl(a) {
       h('button', { class: 'area-add', 'data-act': 'add-to-area', title: `New idea in ${a.name}` }, '+')),
     h('div', { class: 'cols' }, ...colEls));
 }
+// how many Areas share a row. A count, not a pixel budget: an Area that grows a third column widens
+// its row rather than being pushed under its neighbour, and the grid only reshuffles when Areas are
+// added or removed — never because a card was created.
+const areasPerRow = n => Math.ceil(Math.sqrt(n));
+function areaRows(areas) {
+  const per = areasPerRow(areas.length), rows = [];
+  for (let i = 0; i < areas.length; i += per) rows.push(areas.slice(i, i + per));
+  return rows;
+}
 function render() {
   computeVisible();
   world.innerHTML = '';
-  AREAS.forEach(a => world.appendChild(areaEl(a)));
+  areaRows(AREAS).forEach(row => world.appendChild(h('div', { class: 'area-row' }, ...row.map(areaEl))));
   world.appendChild(h('i', { class: 'insline', id: 'insline' }));
   if (!AREAS.length) stage.appendChild(h('div', { class: 'empty-state', id: 'emptyState' }, h('div', {}, h('div', { style: 'font-family:var(--serif);font-style:italic;font-size:22px;color:var(--ink);margin-bottom:6px' }, 'Nothing here yet'), 'Create an Area with + Area, then + Idea.')));
   else { const es = $('#emptyState'); if (es) es.remove(); }
