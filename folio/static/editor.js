@@ -1,17 +1,23 @@
-/* folio note editor: Markdown you can actually type in.
+/* folio note editor: you see bullets, the file keeps Markdown.
 
-   A plain <textarea> that behaves the way Notion and Obsidian do — "- " starts a
-   list and Enter keeps it going, Tab nests, ⌘B wraps — plus a Preview that
-   renders the same Markdown the file holds. Nothing here is a rich-text model:
-   the text in the box IS the text on disk, which is what keeps notes readable in
-   an editor, in git, and in Obsidian.
+   Typing "- " gives you an actual bullet — the dash disappears, the item is
+   indented, Tab nests it under the one above. Same for "1. ", "[] ", "# ", "> ".
+   No Markdown syntax is on screen while you write; the syntax is what gets
+   saved, so a note stays a plain .md file that reads correctly in git and in
+   Obsidian.
 
-   Two rules worth knowing before editing this file:
-   * Every edit goes through applyText(), which rewrites only the span that
-     actually changed, via execCommand('insertText'). That is the one way to
-     change a textarea without throwing away the browser's own undo stack.
-   * The transforms below (enter, indent, toggleList, …) are pure functions of
-     {text, start, end} and touch no DOM, so they can be tested directly. */
+   How it works, and why it is built this way:
+   * The editing surface is a contenteditable holding ordinary HTML — <ul>, <li>,
+     <h2>, <blockquote>. That way the browser's own list handling does the hard
+     parts: Enter continues a list, Enter on an empty item leaves it, Tab nests
+     via execCommand('indent'), and every one of those sits on the native undo
+     stack. A hand-rolled block model would throw all of that away.
+   * Markdown is the wire format, not the model: mdToHtml() on the way in,
+     htmlToMd() on the way out. Both are pure functions, round-trip tested in
+     tests/editor_test.js.
+   * The Markdown toggle swaps in a plain textarea over the same note, for when
+     you want to see or paste raw syntax. Its Enter/Tab helpers are the pure
+     transforms further down. */
 'use strict';
 
 var NoteEditor = (function () {
@@ -20,32 +26,173 @@ var NoteEditor = (function () {
   const LIST = /^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+)(\[[ xX]\][ \t]+)?/;
   const QUOTE = /^([ \t]*)((?:>[ \t]?)+)/;
   const URLISH = /^(https?:\/\/|mailto:)\S+$/i;
-  const NUL = '\u0000';                                   // placeholder while code spans are held aside
+  const NUL = '\u0000';                                  // sentinel while code spans are held aside
+  const ZW = '\u200b';                                    // parking spot for the caret after an inline conversion
   const MAC = typeof navigator === 'undefined' || /Mac|iP(hone|ad)/.test(navigator.platform || navigator.userAgent);
-  const CMD = MAC ? '⌘' : 'Ctrl+';                       // the same shortcuts, named the way this keyboard names them
+  const CMD = MAC ? '⌘' : 'Ctrl+';
 
-  // ---------------------------------------------------------------- text helpers
+  const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' };
+  const esc = s => s.replace(/[&<>"]/g, c => ESC[c]);
+  const safeHref = u => (/^(https?:|mailto:|#|\/|\.{0,2}\/)/i.test(u) ? u : '#');
+  const width = s => s.replace(/\t/g, IND).length;
+
+  // ================================================================ Markdown -> HTML
+  function inlineHtml(s) {
+    const code = [];
+    let t = esc(s).replace(/`([^`]+)`/g, (m, c) => { code.push(c); return NUL + (code.length - 1) + NUL; });
+    t = t.replace(/\\([-*+#>`\[\]()~=_\\])/g, '$1');            // a backslash-escaped marker is just the character
+    t = t.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, a, u) => `<img src="${safeHref(u)}" alt="${a}">`);
+    t = t.replace(/\[([^\]]*)\]\(([^)\s]*)\)/g, (m, a, u) => `<a href="${safeHref(u)}">${a || u}</a>`);
+    t = t.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, (m, p, u) => `${p}<a href="${safeHref(u)}">${u}</a>`);
+    t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/__([^_]+)__/g, '<strong>$1</strong>');
+    t = t.replace(/(^|[^*\w])\*([^*\n]+)\*/g, '$1<em>$2</em>').replace(/(^|[^_\w])_([^_\n]+)_/g, '$1<em>$2</em>');
+    t = t.replace(/~~([^~]+)~~/g, '<del>$1</del>').replace(/==([^=]+)==/g, '<mark>$1</mark>');
+    return t.replace(new RegExp(NUL + '(\\d+)' + NUL, 'g'), (m, i) => `<code>${code[i]}</code>`);
+  }
+
+  /* Markdown in, editable HTML out. Nesting follows the source indent, and a
+     nested list lands inside its parent <li> — the shape the browser itself
+     produces when you press Tab, so what you load and what you type agree. */
+  function mdToHtml(src) {
+    const lines = (src || '').replace(/\r\n?/g, '\n').split('\n');
+    const out = [], stack = [];                            // open lists: {indent, tag}
+    let para = [], fence = null, quote = [];
+    const closeLists = to => { while (stack.length && stack[stack.length - 1].indent > to) out.push(`</li></${stack.pop().tag}>`); };
+    const flushPara = () => { if (para.length) { out.push(`<p>${para.map(inlineHtml).join('<br>')}</p>`); para = []; } };  // keep the lines as written
+    const flushQuote = () => { if (quote.length) { out.push(`<blockquote>${mdToHtml(quote.join('\n'))}</blockquote>`); quote = []; } };
+    const flush = () => { flushPara(); flushQuote(); closeLists(-1); };
+    for (const l of lines) {
+      const f = l.match(/^[ \t]*(```|~~~)/);
+      if (fence !== null) {
+        if (f) { out.push(`<pre><code>${esc(fence.join('\n'))}</code></pre>`); fence = null; } else fence.push(l);
+        continue;
+      }
+      if (f) { flush(); fence = []; continue; }
+      if (!l.trim()) { flush(); continue; }
+      const q = l.match(/^[ \t]*>[ \t]?(.*)$/);
+      if (q) { flushPara(); closeLists(-1); quote.push(q[1]); continue; }
+      flushQuote();
+      const li = l.match(LIST);
+      const hd = l.match(/^[ \t]*(#{1,6})[ \t]+(.*)$/);
+      if (!li && /^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/.test(l)) { flush(); out.push('<hr>'); continue; }
+      if (hd) { flush(); out.push(`<h${hd[1].length}>${inlineHtml(hd[2])}</h${hd[1].length}>`); continue; }
+      if (li) {
+        flushPara();
+        const ind = width(li[1]), tag = /^\d/.test(li[2]) ? 'ol' : 'ul';
+        const item = li[4]
+          ? `<li class="task"><input type="checkbox" contenteditable="false"${/x/i.test(li[4]) ? ' checked' : ''}>`
+          : '<li>';
+        closeLists(ind);
+        const top = stack[stack.length - 1];
+        if (!top || top.indent < ind) { stack.push({ indent: ind, tag }); out.push(`<${tag}>${item}`); }
+        else if (top.tag !== tag) { out.push(`</li></${stack.pop().tag}>`); stack.push({ indent: ind, tag }); out.push(`<${tag}>${item}`); }
+        else out.push(`</li>${item}`);
+        out.push(inlineHtml(l.slice(li[0].length)));
+        continue;
+      }
+      if (stack.length) { out.push(' ' + inlineHtml(l.trim())); continue; }   // lazy continuation of an item
+      para.push(l.trim());
+    }
+    if (fence !== null) out.push(`<pre><code>${esc(fence.join('\n'))}</code></pre>`);
+    flush();
+    return out.join('') || '<p><br></p>';
+  }
+
+  // ================================================================ HTML -> Markdown
+  const trimWrap = (t, mark) => {
+    const m = t.match(/^(\s*)([\s\S]*?)(\s*)$/);
+    return m[2] ? m[1] + mark + m[2] + mark + m[3] : t;
+  };
+  function inlineMd(node, skip) {
+    let s = '';
+    for (const c of node.childNodes) {
+      if (c.nodeType === 3) { s += c.textContent; continue; }
+      if (c.nodeType !== 1) continue;
+      if (skip && skip(c)) continue;
+      const tag = c.tagName.toLowerCase();
+      const inner = () => inlineMd(c, skip);
+      if (tag === 'br') s += '\n';
+      else if (tag === 'strong' || tag === 'b') s += trimWrap(inner(), '**');
+      else if (tag === 'em' || tag === 'i') s += trimWrap(inner(), '*');
+      else if (tag === 'del' || tag === 's' || tag === 'strike') s += trimWrap(inner(), '~~');
+      else if (tag === 'mark') s += trimWrap(inner(), '==');
+      else if (tag === 'code') s += '`' + c.textContent + '`';
+      else if (tag === 'img') s += `![${c.getAttribute('alt') || ''}](${c.getAttribute('src') || ''})`;
+      else if (tag === 'a') { const t = inner(), href = c.getAttribute('href') || ''; s += !t || t === href ? href : `[${t}](${href})`; }
+      else if (tag === 'input') s += '';
+      else s += inner();
+    }
+    return s.split(ZW).join('').replace(/\u00a0/g, ' ');   // the browser's &nbsp; is just a space in a text file
+  }
+  // A paragraph that happens to start with "- " must not come back as a list.
+  const guard = t => (/^\s*([-*+]\s|\d{1,9}[.)]\s|#{1,6}\s|>\s)/.test(t) ? '\\' + t.trimStart() : t);
+  const isList = n => n.tagName === 'UL' || n.tagName === 'OL';
+  const BLOCKISH = new Set(['UL', 'OL', 'BLOCKQUOTE', 'PRE', 'HR', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P']);
+  const kids = n => [...n.childNodes].filter(c => c.nodeType === 1);
+
+  function listMd(list, lines, level, qp) {
+    const ordered = list.tagName === 'OL';
+    let n = parseInt(list.getAttribute('start') || '1', 10);
+    for (const li of kids(list)) {
+      if (isList(li)) { listMd(li, lines, level + 1, qp); continue; }   // the shape Tab leaves behind
+      if (li.tagName !== 'LI') {          // a stray node belongs to the item it was typed into
+        const t = inlineMd({ childNodes: [li] }).trim();
+        if (t && lines.length) lines[lines.length - 1] += (/\s$/.test(lines[lines.length - 1]) ? '' : ' ') + t;
+        continue;
+      }
+      const box = kids(li).find(c => c.tagName === 'INPUT' && c.getAttribute('type') === 'checkbox');
+      const marker = ordered ? `${n++}. ` : box ? `- [${box.checked ? 'x' : ' '}] ` : '- ';
+      const text = inlineMd(li, c => isList(c) || c.tagName === 'INPUT').replace(/\s+/g, ' ').trim();
+      lines.push(qp + IND.repeat(level) + marker + text);
+      for (const sub of kids(li)) if (isList(sub)) listMd(sub, lines, level + 1, qp);
+    }
+  }
+  function blocksMd(parent, lines, qp) {
+    for (const node of parent.childNodes) {
+      if (node.nodeType === 3) { const t = node.textContent.trim(); if (t) lines.push(qp + guard(t), ''); continue; }
+      if (node.nodeType !== 1) continue;
+      const tag = node.tagName.toLowerCase();
+      if (isList(node)) { listMd(node, lines, 0, qp); lines.push(''); }
+      else if (/^h[1-6]$/.test(tag)) lines.push(qp + '#'.repeat(+tag[1]) + ' ' + inlineMd(node).trim(), '');
+      else if (tag === 'blockquote') { blocksMd(node, lines, qp + '> '); lines.push(''); }
+      else if (tag === 'pre') {
+        lines.push(qp + '```');
+        node.textContent.replace(/\n$/, '').split('\n').forEach(l => lines.push(qp + l));
+        lines.push(qp + '```', '');
+      }
+      else if (tag === 'hr') lines.push(qp + '---', '');
+      else if (tag === 'br') { /* a bare <br> between blocks is only spacing */ }
+      else if (kids(node).some(c => BLOCKISH.has(c.tagName))) blocksMd(node, lines, qp);  // a <p> the browser filled with blocks
+      else {                                               // p, div, and whatever else the browser leaves behind
+        const t = inlineMd(node);
+        if (t.trim()) t.split('\n').forEach((l, i) => lines.push(qp + (i ? l : guard(l))));
+        lines.push('');
+      }
+    }
+  }
+  function htmlToMd(root) {
+    const lines = [];
+    blocksMd(root, lines, '');
+    return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  // ================================================================ source-mode transforms
+  // (the Markdown tab is a plain textarea; these keep Enter and Tab useful there)
   const lineStart = (t, i) => t.lastIndexOf('\n', i - 1) + 1;
   const lineEnd = (t, i) => { const j = t.indexOf('\n', i); return j < 0 ? t.length : j; };
   const leading = l => (l.match(/^[ \t]*/) || [''])[0];
-  const width = s => s.replace(/\t/g, IND).length;
   const unindent = l => l.replace(l.startsWith('\t') ? /^\t/ : new RegExp('^ {1,' + IND.length + '}'), '');
-  // A fenced code block swallows every rule below it, so Enter must stay dumb inside one.
   function inFence(text, pos) {
     let open = false;
     for (const l of text.slice(0, pos).split('\n')) if (/^[ \t]*(```|~~~)/.test(l)) open = !open;
     return open;
   }
-  const doc = (text, start, end = start) => ({ text, start, end });
-  // Collapse a selection: every transform below acts on a single caret.
+  const doc_ = (text, start, end = start) => ({ text, start, end });
   const cut = d => (d.start === d.end
     ? { text: d.text, pos: d.start }
     : { text: d.text.slice(0, d.start) + d.text.slice(d.end), pos: d.start });
-  const splice = (text, from, to, s, caret) => doc(text.slice(0, from) + s + text.slice(to), caret == null ? from + s.length : caret);
+  const splice = (text, from, to, s, caret) => doc_(text.slice(0, from) + s + text.slice(to), caret == null ? from + s.length : caret);
 
-  /* Rewrite ordered-list numbers so a list still reads 1,2,3 after an insert, an
-     indent or a paste. `pos` is carried through: a line rewritten before the caret
-     moves it, so we hand back the corrected offset rather than make callers guess. */
   function renumber(text, pos) {
     const lines = text.split('\n');
     const counters = new Map();
@@ -70,18 +217,14 @@ var NoteEditor = (function () {
             const n = counters.has(ind) ? counters.get(ind) : nested ? 1 : parseInt(m[2], 10);
             next = m[1] + n + m[2].slice(-1) + old.slice(m[1].length + m[2].length);
             counters.set(ind, n + 1);
-          } else counters.set(ind, 1);                       // a bullet at this depth restarts numbering
+          } else counters.set(ind, 1);
         }
       }
       if (next !== old) { lines[i] = next; if (at < pos) delta += next.length - old.length; }
       at += old.length + 1;
     }
-    return doc(lines.join('\n'), pos + delta);
+    return doc_(lines.join('\n'), pos + delta);
   }
-
-  // ---------------------------------------------------------------- transforms
-  /* Enter: keep the list, task list or quote you are inside going. On an empty
-     item it steps out one level at a time — outdent, then drop the marker. */
   function enter(d) {
     const { text, pos } = cut(d);
     const ls = lineStart(text, pos), le = lineEnd(text, pos), line = text.slice(ls, le);
@@ -107,10 +250,7 @@ var NoteEditor = (function () {
     }
     return splice(text, pos, pos, '\n' + (line.trim() ? leading(line) : ''));
   }
-
-  /* Tab / ⇧Tab. Anywhere inside a list item it nests or unnests the whole item,
-     the way Notion does; elsewhere it is an ordinary four-space indent. */
-  function indent(d, dir) {
+  function indentSrc(d, dir) {
     const { text } = d;
     const first = lineStart(text, d.start), last = lineEnd(text, d.end);
     const multi = text.slice(d.start, d.end).includes('\n');
@@ -119,9 +259,8 @@ var NoteEditor = (function () {
       const { text: t, pos } = cut(d);
       return splice(t, pos, pos, IND);
     }
-    const lines = text.slice(first, last).split('\n');
     let head = 0, total = 0;
-    const out = lines.map((l, i) => {
+    const out = text.slice(first, last).split('\n').map((l, i) => {
       if (!l.trim() && dir > 0) return l;
       const n = dir > 0 ? IND + l : unindent(l);
       const dl = n.length - l.length;
@@ -130,318 +269,397 @@ var NoteEditor = (function () {
       return n;
     }).join('\n');
     const r = renumber(text.slice(0, first) + out + text.slice(last), 0);
-    return doc(r.text, Math.max(first, d.start + head), Math.max(first, d.end + (multi ? total : head)));
+    return doc_(r.text, Math.max(first, d.start + head), Math.max(first, d.end + (multi ? total : head)));
   }
 
-  /* ⌘⇧8 / ⌘⇧7 / ⌘⇧9 — turn the selected lines into a bullet, numbered or to-do
-     list, or take the markers away again if they are already that kind. */
-  function toggleList(d, kind) {
-    const { text } = d;
-    const first = lineStart(text, d.start), last = lineEnd(text, d.end);
-    const lines = text.slice(first, last).split('\n');
-    const isKind = l => {
-      const m = l.match(LIST);
-      if (!m) return false;
-      return kind === 'task' ? !!m[4] : kind === 'ordered' ? /^\d/.test(m[2]) && !m[4] : /^[-*+]$/.test(m[2]) && !m[4];
-    };
-    const body = lines.filter(l => l.trim());
-    const off = body.length > 0 && body.every(isKind);
-    const out = lines.map(l => {
-      if (!l.trim()) return l;
-      const m = l.match(LIST), ind = m ? m[1] : leading(l), rest = m ? l.slice(m[0].length) : l.slice(ind.length);
-      return off ? ind + rest : ind + (kind === 'ordered' ? '1. ' : kind === 'task' ? '- [ ] ' : '- ') + rest;
-    }).join('\n');
-    const r = renumber(text.slice(0, first) + out + text.slice(last), 0);
-    return doc(r.text, first, first + out.length);
-  }
-
-  // Backspace at the head of an item's text peels off one level, then the marker.
-  function backspace(d) {
-    if (d.start !== d.end) return null;
-    const { text } = d, pos = d.start;
-    const ls = lineStart(text, pos), le = lineEnd(text, pos), line = text.slice(ls, le);
-    const m = line.match(LIST);
-    if (!m || pos !== ls + m[0].length) return null;
-    if (width(m[1]) >= IND.length) {
-      const out = unindent(m[1]) + line.slice(m[1].length);
-      return renumber(text.slice(0, ls) + out + text.slice(le), ls + out.length - (line.length - m[0].length));
-    }
-    return renumber(text.slice(0, ls) + line.slice(m[0].length) + text.slice(le), ls);
-  }
-
-  // ⌘B / ⌘I / ⌘E — wrap the selection, or the word under the caret, and unwrap it again.
-  function wrapInline(d, before, after = before) {
-    let { text, start, end } = d;
-    if (start === end) {                                     // no selection: take the word under the caret
-      const ls = lineStart(text, start), le = lineEnd(text, start);
-      let s = start, e = end;
-      while (s > ls && /[\w'’-]/.test(text[s - 1])) s--;
-      while (e < le && /[\w'’-]/.test(text[e])) e++;
-      if (e > s) { start = s; end = e; }
-    }
-    const sel = text.slice(start, end);
-    if (sel.startsWith(before) && sel.endsWith(after) && sel.length >= before.length + after.length)
-      return doc(text.slice(0, start) + sel.slice(before.length, sel.length - after.length) + text.slice(end), start, end - before.length - after.length);
-    if (text.slice(start - before.length, start) === before && text.slice(end, end + after.length) === after)
-      return doc(text.slice(0, start - before.length) + sel + text.slice(end + after.length), start - before.length, end - before.length);
-    return doc(text.slice(0, start) + before + sel + after + text.slice(end), start + before.length, end + before.length);
-  }
-
-  // ⌘K — a link, with whichever half you still have to type left selected.
-  function link(d) {
-    let { text, start, end } = d;
-    if (start === end) {
-      const ls = lineStart(text, start), le = lineEnd(text, start);
-      let s = start, e = end;
-      while (s > ls && /\S/.test(text[s - 1])) s--;
-      while (e < le && /\S/.test(text[e])) e++;
-      if (e > s) { start = s; end = e; }
-    }
-    const sel = text.slice(start, end);
-    if (URLISH.test(sel)) return doc(text.slice(0, start) + '[](' + sel + ')' + text.slice(end), start + 1);
-    const out = '[' + sel + '](url)';
-    return doc(text.slice(0, start) + out + text.slice(end), start + out.length - 4, start + out.length - 1);
-  }
-
-  /* Paste, with the two conveniences everyone expects: a URL dropped on selected
-     text becomes a link, and pasted lines dropped into a list join the list. */
-  function pasteInto(d, pasted) {
-    const clean = pasted.replace(/\r\n?/g, '\n');
-    if (d.start !== d.end && !clean.includes('\n') && URLISH.test(clean.trim())) {
-      const sel = d.text.slice(d.start, d.end);
-      const out = '[' + sel + '](' + clean.trim() + ')';
-      return doc(d.text.slice(0, d.start) + out + d.text.slice(d.end), d.start + out.length);
-    }
-    if (clean.includes('\n')) {
-      const { text, pos } = cut(d);
-      const ls = lineStart(text, pos), line = text.slice(ls, lineEnd(text, pos));
-      const m = line.match(LIST);
-      const rows = clean.split('\n');
-      if (m && pos >= ls + m[0].length && !rows.some(r => LIST.test(r))) {
-        const marker = /^\d/.test(m[2]) ? m[1] + '1' + m[2].slice(-1) + m[3] : m[1] + m[2] + m[3] + (m[4] ? '[ ] ' : '');
-        const joined = rows.map((r, i) => (i ? marker + r.trim() : r)).join('\n');
-        const out = splice(text, pos, pos, joined);
-        return renumber(out.text, out.start);
-      }
-    }
-    return null;                                             // nothing clever to do — let the browser paste
-  }
-
-  // ---------------------------------------------------------------- preview
-  const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' };
-  const esc = s => s.replace(/[&<>"]/g, c => ESC[c]);
-  const safeHref = u => (/^(https?:|mailto:|#|\/|\.{0,2}\/)/i.test(u) ? u : '#');
-  function inline(s) {
-    const code = [];
-    let t = esc(s).replace(/`([^`]+)`/g, (m, c) => { code.push(c); return NUL + (code.length - 1) + NUL; });
-    t = t.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, a, u) => `<img src="${safeHref(u)}" alt="${a}">`);
-    t = t.replace(/\[([^\]]*)\]\(([^)\s]*)\)/g, (m, a, u) => `<a href="${safeHref(u)}" target="_blank" rel="noopener">${a || u}</a>`);
-    t = t.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, (m, p, u) => `${p}<a href="${safeHref(u)}" target="_blank" rel="noopener">${u}</a>`);
-    t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/__([^_]+)__/g, '<strong>$1</strong>');
-    t = t.replace(/(^|[^*\w])\*([^*\n]+)\*/g, '$1<em>$2</em>').replace(/(^|[^_\w])_([^_\n]+)_/g, '$1<em>$2</em>');
-    t = t.replace(/~~([^~]+)~~/g, '<del>$1</del>').replace(/==([^=]+)==/g, '<mark>$1</mark>');
-    return t.replace(new RegExp(NUL + '(\\d+)' + NUL, 'g'), (m, i) => `<code>${code[i]}</code>`);
-  }
-  /* Renders the subset the notes actually use. Task boxes carry their source line
-     number, so a click in the preview can flip that one character in the file. */
-  function mdHtml(src) {
-    const lines = src.replace(/\r\n?/g, '\n').split('\n');
-    const out = [], stack = [];                              // open lists: {indent, tag}
-    let para = [], fence = null, quote = [];
-    const closeLists = to => { while (stack.length && stack[stack.length - 1].indent > to) out.push(`</li></${stack.pop().tag}>`); };
-    const flushPara = () => { if (para.length) { out.push(`<p>${inline(para.join(' '))}</p>`); para = []; } };
-    const flushQuote = () => { if (quote.length) { out.push(`<blockquote>${mdHtml(quote.join('\n'))}</blockquote>`); quote = []; } };
-    const flush = () => { flushPara(); flushQuote(); closeLists(-1); };
-    for (let i = 0; i < lines.length; i++) {
-      const l = lines[i];
-      const f = l.match(/^[ \t]*(```|~~~)/);
-      if (fence !== null) {
-        if (f) { out.push(`<pre><code>${esc(fence.join('\n'))}</code></pre>`); fence = null; } else fence.push(l);
-        continue;
-      }
-      if (f) { flush(); fence = []; continue; }
-      if (!l.trim()) { flush(); continue; }
-      const q = l.match(/^[ \t]*>[ \t]?(.*)$/);
-      if (q) { flushPara(); closeLists(-1); quote.push(q[1]); continue; }
-      flushQuote();
-      const li = l.match(LIST);
-      const hd = l.match(/^[ \t]*(#{1,6})[ \t]+(.*)$/);
-      if (!li && /^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/.test(l)) { flush(); out.push('<hr>'); continue; }
-      if (hd) { flush(); const n = hd[1].length; out.push(`<h${n}>${inline(hd[2])}</h${n}>`); continue; }
-      if (li) {
-        flushPara();
-        const ind = width(li[1]), tag = /^\d/.test(li[2]) ? 'ol' : 'ul';
-        closeLists(ind);
-        const top = stack[stack.length - 1];
-        if (!top || top.indent < ind) { stack.push({ indent: ind, tag }); out.push(`<${tag}><li>`); }
-        else if (top.tag !== tag) { out.push(`</li></${stack.pop().tag}>`); stack.push({ indent: ind, tag }); out.push(`<${tag}><li>`); }
-        else out.push('</li><li>');
-        const rest = l.slice(li[0].length);
-        if (li[4]) {
-          const on = /x/i.test(li[4]);
-          out.push(`<label class="md-task"><input type="checkbox" data-line="${i}"${on ? ' checked' : ''}><span${on ? ' class="md-done"' : ''}>${inline(rest)}</span></label>`);
-        } else out.push(inline(rest));
-        continue;
-      }
-      if (stack.length) { out.push(' ' + inline(l.trim())); continue; }   // lazy continuation of an item
-      para.push(l.trim());
-    }
-    if (fence !== null) out.push(`<pre><code>${esc(fence.join('\n'))}</code></pre>`);
-    flush();
-    return out.join('');
-  }
-
-  // ---------------------------------------------------------------- the widget
-  /* Writes only the span that changed, so ⌘Z walks back through your own edits
-     instead of undoing the whole note in one gulp. */
-  function applyText(ta, next) {
-    const cur = ta.value;
-    if (cur !== next.text) {
-      const max = Math.min(cur.length, next.text.length);
-      let a = 0;
-      while (a < max && cur[a] === next.text[a]) a++;
-      let b = 0;
-      while (b < max - a && cur[cur.length - 1 - b] === next.text[next.text.length - 1 - b]) b++;
-      const from = a, to = cur.length - b, insert = next.text.slice(a, next.text.length - b);
-      ta.focus();
-      ta.setSelectionRange(from, to);
-      const ok = insert ? document.execCommand('insertText', false, insert) : document.execCommand('delete');
-      if (!ok || ta.value !== next.text) ta.value = next.text;            // browsers without execCommand: correctness first
-    }
-    ta.setSelectionRange(next.start, next.end);
-    ta.dispatchEvent(new Event('input', { bubbles: true }));
-  }
-  const read = ta => doc(ta.value, ta.selectionStart, ta.selectionEnd);
+  // ================================================================ the widget
   const mod = e => e.metaKey || e.ctrlKey;
+  const sel = () => window.getSelection();
+  const BLOCKS = 'P,DIV,LI,H1,H2,H3,H4,H5,H6,BLOCKQUOTE,PRE';
+  function blockOf(node, root) {
+    let n = node && node.nodeType === 3 ? node.parentNode : node;
+    while (n && n !== root) { if (n.matches && n.matches(BLOCKS)) return n; n = n.parentNode; }
+    return null;
+  }
+  // text from the start of the block up to the caret — what the input rules match on
+  function textBefore(block, r) {
+    const pre = document.createRange();
+    pre.selectNodeContents(block);
+    try { pre.setEnd(r.startContainer, r.startOffset); } catch (e) { return ''; }
+    return pre.toString();
+  }
+  function selectBack(block, r) {                          // select [block start, caret] so it can be deleted
+    const range = document.createRange();
+    range.selectNodeContents(block);
+    range.setEnd(r.startContainer, r.startOffset);
+    const s = sel();
+    s.removeAllRanges();
+    s.addRange(range);
+  }
+  function mkBox(checked) {
+    const b = document.createElement('input');
+    b.type = 'checkbox';
+    b.contentEditable = 'false';
+    b.checked = !!checked;
+    return b;
+  }
+  const mkEl = (tag, text, href) => {
+    const el = document.createElement(tag);
+    el.textContent = text;
+    if (href) el.setAttribute('href', href);
+    return el;
+  };
+  /* Drop an element in place of a range and leave the caret just outside it, so
+     what you type next is not swallowed by the new mark. execCommand cannot be
+     used here: at the end of a list item it plants the element after the </li>. */
+  function put(range, el) {
+    range.deleteContents();
+    range.insertNode(el);
+    const tail = document.createTextNode(ZW);
+    el.parentNode.insertBefore(tail, el.nextSibling);
+    const after = document.createRange();
+    after.setStart(tail, 1);
+    after.collapse(true);
+    const s = sel();
+    s.removeAllRanges();
+    s.addRange(after);
+  }
+  function placeCaretAtEnd(node) {
+    const r = document.createRange();
+    r.selectNodeContents(node);
+    r.collapse(false);
+    const s = sel();
+    s.removeAllRanges();
+    s.addRange(r);
+  }
 
   function create({ value = '', save, placeholder = '', onError = () => { } } = {}) {
-    let saved = value, timer = null, mode = 'write';
+    let saved = value, timer = null, mode = 'rich';
 
-    const ta = document.createElement('textarea');
-    ta.className = 'md-src';
-    ta.value = value;
-    ta.placeholder = placeholder;
-    ta.spellcheck = true;
-    ta.setAttribute('aria-label', 'Notes, in Markdown');
+    const doc = document.createElement('div');
+    doc.className = 'md-doc';
+    doc.contentEditable = 'true';
+    doc.spellcheck = true;
+    doc.setAttribute('role', 'textbox');
+    doc.setAttribute('aria-multiline', 'true');
+    doc.setAttribute('aria-label', 'Notes');
+    doc.dataset.placeholder = placeholder;
+    doc.innerHTML = mdToHtml(value);
 
-    const view = document.createElement('div');
-    view.className = 'notes-view md-preview';
-    view.hidden = true;
+    const src = document.createElement('textarea');        // the Markdown tab
+    src.className = 'md-src';
+    src.hidden = true;
+    src.spellcheck = true;
+    src.setAttribute('aria-label', 'Notes as Markdown');
 
     const hint = document.createElement('div');
     hint.className = 'md-hint';
-    hint.textContent = `“- ” bullet · Tab nest · ${CMD}B bold · ${CMD}K link · ${CMD}⇧9 to-do`;
+    hint.textContent = `“- ” bullet · “1. ” numbered · “[] ” to-do · Tab nests · ${CMD}B bold`;
 
     const el = document.createElement('div');
     el.className = 'md-editor';
-    el.dataset.mode = mode;
-    el.append(ta, view, hint);
+    el.append(doc, src, hint);
 
     const status = document.createElement('span');
     status.className = 'md-status';
     const modeBtn = document.createElement('button');
     modeBtn.className = 'act';
     modeBtn.type = 'button';
-    modeBtn.title = `Show the notes rendered (${CMD}⇧P)`;
-    modeBtn.textContent = 'Preview';
+    modeBtn.textContent = 'Markdown';
+    modeBtn.title = `See the raw Markdown (${CMD}⇧M)`;
 
-    const dirty = () => ta.value !== saved;
+    const text = () => (mode === 'source' ? src.value.trim() : htmlToMd(doc));
+    const dirty = () => text() !== saved;
     const setStatus = s => { status.textContent = s; };
+    const showPlaceholder = () => doc.classList.toggle('is-empty', !doc.textContent.trim() && !doc.querySelector('input,img,hr'));
     const grow = () => {
-      ta.style.height = 'auto';
-      ta.style.height = Math.min(Math.max(ta.scrollHeight + 2, 132), Math.round(window.innerHeight * 0.5)) + 'px';
+      src.style.height = 'auto';
+      src.style.height = Math.min(Math.max(src.scrollHeight + 2, 132), Math.round(window.innerHeight * 0.5)) + 'px';
     };
 
     async function flush() {
-      if (!dirty() || !save) return;
+      if (!save || !dirty()) return;
       clearTimeout(timer); timer = null;
-      const text = ta.value;
+      const t = text();
       setStatus('Saving…');
-      try { await save(text); saved = text; setStatus(dirty() ? 'Unsaved' : 'Saved'); }
+      try { await save(t); saved = t; setStatus(dirty() ? 'Unsaved' : 'Saved'); }
       catch (e) { setStatus('Not saved'); onError(e); }
     }
     const schedule = () => { clearTimeout(timer); timer = setTimeout(flush, 800); };
+    const touched = () => { showPlaceholder(); setStatus(dirty() ? 'Unsaved' : 'Saved'); schedule(); };
 
-    const renderPreview = () => {
-      view.innerHTML = ta.value.trim() ? mdHtml(ta.value) : '<p class="md-empty">Nothing yet — switch to Write and start typing.</p>';
-    };
-    function setMode(next) {
-      mode = next;
-      const preview = mode === 'preview';
-      ta.hidden = preview; view.hidden = !preview; hint.hidden = preview;
-      modeBtn.textContent = preview ? 'Write' : 'Preview';
-      modeBtn.title = preview ? `Back to editing (${CMD}⇧P)` : `Show the notes rendered (${CMD}⇧P)`;
-      el.dataset.mode = mode;
-      if (preview) { flush(); renderPreview(); } else { grow(); ta.focus(); }
+    // ---------------------------------------------------------- input rules
+    function currentLi() {
+      const s = sel();
+      if (!s.rangeCount) return null;
+      const b = blockOf(s.getRangeAt(0).startContainer, doc);
+      return b && b.tagName === 'LI' ? b : null;
     }
-    modeBtn.addEventListener('click', () => setMode(mode === 'preview' ? 'write' : 'preview'));
+    function makeTask() {
+      if (!currentLi()) document.execCommand('insertUnorderedList');
+      const li = currentLi();
+      if (!li) return;
+      li.classList.add('task');
+      if (!li.querySelector(':scope > input[type=checkbox]')) li.insertBefore(mkBox(false), li.firstChild);
+    }
+    /* "- " and friends, applied the moment the space lands: delete what you typed,
+       then ask the browser for the real thing, so the change rides on the native
+       undo stack instead of a private one. */
+    const BLOCK_RULES = [
+      [/^[-*+]\s$/, 'list', () => document.execCommand('insertUnorderedList')],
+      [/^\d{1,9}[.)]\s$/, 'list', () => document.execCommand('insertOrderedList')],
+      [/^\[[ xX]?\]\s$/, 'task', () => makeTask()],
+      [/^(#{1,6})\s$/, 'block', m => document.execCommand('formatBlock', false, 'h' + Math.min(6, m[1].length))],
+      [/^>\s$/, 'block', () => document.execCommand('formatBlock', false, 'blockquote')],
+      [/^(```|~~~)$/, 'block', () => document.execCommand('formatBlock', false, 'pre')],
+      [/^(-{3,}|\*{3,}|_{3,})$/, 'block', () => document.execCommand('insertHTML', false, '<hr><p><br></p>')],
+    ];
+    function blockRules() {
+      const s = sel();
+      if (!s.rangeCount || !s.isCollapsed) return false;
+      const r = s.getRangeAt(0);
+      const block = blockOf(r.startContainer, doc);
+      if (!block || block.tagName === 'PRE') return false;
+      const before = textBefore(block, r);
+      for (const [re, kind, run] of BLOCK_RULES) {
+        const m = before.match(re);
+        if (!m) continue;
+        // Already this kind of item: "- " would toggle the list off, so eat the
+        // marker instead and leave the bullet you asked for. ("1. " on a bullet is
+        // still a real request, and falls through to the command below.)
+        if (kind === 'list' && block.tagName === 'LI' && block.parentNode.tagName === (re.source.startsWith('^\\d') ? 'OL' : 'UL')) {
+          selectBack(block, r);
+          document.execCommand('delete');
+          return true;
+        }
+        selectBack(block, r);
+        document.execCommand('delete');
+        run(m);
+        return true;
+      }
+      return false;
+    }
+    /* The same idea inline: finish "**bold**" or `code` and it becomes the thing
+       it describes. The zero-width space is only a place to park the caret
+       outside the new element; htmlToMd drops it. */
+    const INLINE_RULES = [
+      [/\*\*([^*\n]+)\*\*$/, m => mkEl('strong', m[1])],
+      [/(?<!\*)\*([^*\n]+)\*$/, m => mkEl('em', m[1])],          // not the half-typed "**bold*"
+      [/`([^`\n]+)`$/, m => mkEl('code', m[1])],
+      [/~~([^~\n]+)~~$/, m => mkEl('del', m[1])],
+      [/\[([^\]\n]+)\]\(([^)\s]+)\)$/, m => mkEl('a', m[1], safeHref(m[2]))],
+    ];
+    function inlineRules() {
+      const s = sel();
+      if (!s.rangeCount || !s.isCollapsed) return false;
+      const r = s.getRangeAt(0);
+      if (r.startContainer.nodeType !== 3) return false;
+      const block = blockOf(r.startContainer, doc);
+      if (!block || block.tagName === 'PRE') return false;
+      const before = r.startContainer.textContent.slice(0, r.startOffset);
+      for (const [re, build] of INLINE_RULES) {
+        const m = before.match(re);
+        if (!m) continue;
+        const range = document.createRange();
+        range.setStart(r.startContainer, r.startOffset - m[0].length);
+        range.setEnd(r.startContainer, r.startOffset);
+        put(range, build(m));
+        return true;
+      }
+      return false;
+    }
+    /* Chrome grows a new list inside the paragraph it came from. Left alone, the
+       document drifts from the shape it has when loaded from Markdown, so lift
+       the list out whenever the paragraph was only holding it. */
+    function tidy() {
+      for (const list of doc.querySelectorAll('ul, ol')) {
+        const box = list.parentNode;
+        if (box === doc || !/^(P|DIV)$/.test(box.tagName)) continue;   // never the root: that is the editor itself
+        const other = [...box.childNodes].some(n => n !== list && !isList(n)
+          && (n.nodeType === 3 ? n.textContent.trim() : n.tagName !== 'BR'));
+        if (other) continue;
+        box.parentNode.insertBefore(list, box);
+        if (!box.textContent.trim() && !box.querySelector('ul,ol,input,img,hr')) box.remove();
+      }
+    }
+    /* Chrome keeps the class when it clones a to-do item but not the checkbox
+       inside it: put one back, and never carry a tick onto a fresh item. */
+    function normalizeTasks() {
+      for (const li of doc.querySelectorAll('li.task')) {
+        const boxes = li.querySelectorAll(':scope > input[type=checkbox]');
+        if (!boxes.length) li.insertBefore(mkBox(false), li.firstChild);
+        else boxes.forEach(b => { b.contentEditable = 'false'; });
+      }
+      doc.querySelectorAll('li:not(.task) > input[type=checkbox]').forEach(b => b.remove());
+    }
 
-    // a box ticked in the preview flips that character in the source
-    view.addEventListener('change', e => {
-      const box = e.target.closest('input[type=checkbox][data-line]');
-      if (!box) return;
-      const lines = ta.value.split('\n'), i = +box.dataset.line;
-      if (lines[i] === undefined) return;
-      lines[i] = lines[i].replace(/\[[ xX]\]/, box.checked ? '[x]' : '[ ]');
-      ta.value = lines.join('\n');
-      renderPreview();
-      flush();
+    // ---------------------------------------------------------- events
+    let applying = false;                                  // a rule's own edit must not re-trigger the rules
+    doc.addEventListener('input', e => {
+      if (!applying && (!e.inputType || /^insert(Text|Composition|Replacement)/.test(e.inputType))) {
+        applying = true;
+        try { if (!blockRules()) inlineRules(); } finally { applying = false; }
+      }
+      tidy();
+      normalizeTasks();
+      touched();
     });
-
-    ta.addEventListener('input', () => { grow(); setStatus(dirty() ? 'Unsaved' : 'Saved'); schedule(); });
-    ta.addEventListener('blur', flush);
-    ta.addEventListener('paste', e => {
-      const t = (e.clipboardData || window.clipboardData).getData('text/plain');
-      if (!t) return;
-      const next = pasteInto(read(ta), t);
-      if (next) { e.preventDefault(); applyText(ta, next); }
+    doc.addEventListener('blur', flush);
+    // ticking a box is a change to the note: save the state the browser lands on
+    doc.addEventListener('click', e => {
+      if (e.target.tagName === 'INPUT' && e.target.type === 'checkbox') { touched(); flush(); }
     });
-    ta.addEventListener('keydown', e => {
+    doc.addEventListener('keydown', e => {
       const k = e.key;
-      if (k === 'Enter' && mod(e)) { e.preventDefault(); flush(); return; }
-      if (k === 'Enter' && !e.shiftKey && !e.altKey) { e.preventDefault(); applyText(ta, enter(read(ta))); return; }
-      if (k === 'Tab' && !e.altKey && !mod(e)) { e.preventDefault(); applyText(ta, indent(read(ta), e.shiftKey ? -1 : 1)); return; }
-      if (k === 'Backspace' && !mod(e)) { const n = backspace(read(ta)); if (n) { e.preventDefault(); applyText(ta, n); } return; }
+      if (k === 'Tab') {                                   // nest / unnest the item you are in
+        if (!currentLi()) return;                          // outside a list, leave Tab to the browser
+        e.preventDefault();
+        document.execCommand(e.shiftKey ? 'outdent' : 'indent');
+        tidy();
+        normalizeTasks();
+        touched();
+        return;
+      }
+      if (k === 'Enter' && !e.shiftKey && !mod(e)) {
+        const li = currentLi();
+        if (!li || !li.classList.contains('task')) return;  // the browser's own list handling is right
+        if (!inlineMd(li, c => c.tagName === 'INPUT').trim()) {
+          li.querySelectorAll(':scope > input[type=checkbox]').forEach(b => b.remove());
+          li.classList.remove('task');                     // empty: let the browser leave the list
+          return;
+        }
+        requestAnimationFrame(() => {                      // the item you just started is a fresh, unticked to-do
+          const now = currentLi();
+          if (now && now !== li) {
+            now.classList.add('task');
+            now.querySelectorAll(':scope > input[type=checkbox], :scope > br').forEach(b => b.remove());
+            now.insertBefore(mkBox(false), now.firstChild);
+            placeCaretAtEnd(now);
+          }
+          touched();
+        });
+        return;
+      }
+      if (k === 'Backspace') {                             // at the head of an item, step back out of it
+        const li = currentLi();
+        const s = sel();
+        if (!li || !s.isCollapsed || !s.rangeCount || textBefore(li, s.getRangeAt(0))) return;
+        e.preventDefault();
+        if (li.classList.contains('task')) {                // the box goes first, the item stays
+          li.querySelectorAll(':scope > input[type=checkbox]').forEach(b => b.remove());
+          li.classList.remove('task');
+        } else {
+          document.execCommand('outdent');                  // nested: up a level; top level: back to a paragraph
+          tidy();
+        }
+        touched();
+        return;
+      }
       if (!mod(e)) return;
       const low = k.toLowerCase();
       if (low === 's') { e.preventDefault(); flush(); return; }
       if (e.shiftKey) {
-        if (low === 'p') { e.preventDefault(); setMode(mode === 'preview' ? 'write' : 'preview'); }
-        else if (k === '8' || k === '*') { e.preventDefault(); applyText(ta, toggleList(read(ta), 'bullet')); }
-        else if (k === '7' || k === '&') { e.preventDefault(); applyText(ta, toggleList(read(ta), 'ordered')); }
-        else if (k === '9' || k === '(') { e.preventDefault(); applyText(ta, toggleList(read(ta), 'task')); }
+        if (low === 'm') { e.preventDefault(); setMode(mode === 'source' ? 'rich' : 'source'); }
+        else if (k === '8' || k === '*') { e.preventDefault(); document.execCommand('insertUnorderedList'); touched(); }
+        else if (k === '7' || k === '&') { e.preventDefault(); document.execCommand('insertOrderedList'); touched(); }
+        else if (k === '9' || k === '(') { e.preventDefault(); makeTask(); touched(); }
         return;
       }
-      if (low === 'b') { e.preventDefault(); applyText(ta, wrapInline(read(ta), '**')); }
-      else if (low === 'i') { e.preventDefault(); applyText(ta, wrapInline(read(ta), '*')); }
-      else if (low === 'e') { e.preventDefault(); applyText(ta, wrapInline(read(ta), '`')); }
-      else if (low === 'k') { e.preventDefault(); applyText(ta, link(read(ta))); }
+      if (low === 'e') {                                   // inline code has no native command
+        e.preventDefault();
+        const s = sel();
+        if (s.rangeCount && s.toString()) put(s.getRangeAt(0), mkEl('code', s.toString()));
+        touched();
+      } else if (low === 'k') {
+        e.preventDefault();
+        const s = sel();
+        const text = s.toString();
+        const url = window.prompt('Link to', 'https://');
+        if (!url) return;
+        if (text) document.execCommand('createLink', false, url);
+        else if (s.rangeCount) put(s.getRangeAt(0), mkEl('a', url, safeHref(url)));
+        touched();
+      }
+      // ⌘B and ⌘I are the browser's own and already do the right thing
+    });
+    /* Paste: Markdown becomes real blocks, a URL over a selection becomes a link,
+       anything else falls through to the browser. */
+    doc.addEventListener('paste', e => {
+      const t = (e.clipboardData || window.clipboardData).getData('text/plain');
+      if (!t) return;
+      if (!t.includes('\n') && URLISH.test(t.trim())) {
+        if (sel().toString()) { e.preventDefault(); document.execCommand('createLink', false, t.trim()); touched(); }
+        return;
+      }
+      if (t.includes('\n') || LIST.test(t) || /^#{1,6}\s/.test(t)) {
+        e.preventDefault();
+        document.execCommand('insertHTML', false, mdToHtml(t));
+        tidy();
+        normalizeTasks();
+        touched();
+      }
     });
 
+    // ---------------------------------------------------------- the Markdown tab
+    src.addEventListener('input', () => { grow(); touched(); });
+    src.addEventListener('blur', flush);
+    src.addEventListener('keydown', e => {
+      const read = () => doc_(src.value, src.selectionStart, src.selectionEnd);
+      const apply = next => {
+        src.focus();
+        src.setSelectionRange(0, src.value.length);
+        if (!document.execCommand('insertText', false, next.text)) src.value = next.text;
+        src.setSelectionRange(next.start, next.end);
+        grow();
+        touched();
+      };
+      if (e.key === 'Enter' && !e.shiftKey && !mod(e)) { e.preventDefault(); apply(enter(read())); }
+      else if (e.key === 'Tab' && !mod(e)) { e.preventDefault(); apply(indentSrc(read(), e.shiftKey ? -1 : 1)); }
+      else if (mod(e) && e.key.toLowerCase() === 's') { e.preventDefault(); flush(); }
+      else if (mod(e) && e.shiftKey && e.key.toLowerCase() === 'm') { e.preventDefault(); setMode('rich'); }
+    });
+
+    function setMode(next) {
+      if (next === mode) return;
+      const md = text();
+      mode = next;
+      if (mode === 'source') { src.value = md; src.hidden = false; doc.hidden = true; grow(); src.focus(); }
+      else { doc.innerHTML = mdToHtml(md); doc.hidden = false; src.hidden = true; doc.focus(); }
+      modeBtn.textContent = mode === 'source' ? 'Formatted' : 'Markdown';
+      modeBtn.title = mode === 'source' ? `Back to formatted notes (${CMD}⇧M)` : `See the raw Markdown (${CMD}⇧M)`;
+      hint.hidden = mode === 'source';
+      el.dataset.mode = mode;
+      showPlaceholder();
+    }
+    modeBtn.addEventListener('click', () => setMode(mode === 'source' ? 'rich' : 'source'));
+
+    try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch (e) { /* older engines */ }
+    el.dataset.mode = mode;
     setStatus('');
-    requestAnimationFrame(grow);
+    showPlaceholder();
 
     return {
       el, status, modeBtn,
-      focus: () => ta.focus(),
+      focus: () => (mode === 'source' ? src : doc).focus(),
       isDirty: dirty,
       flush,
-      value: () => ta.value,
+      value: text,
       /* The poll rebuilds the inspector every few seconds; it must never overwrite
          what you are in the middle of writing. */
       setRemote(next) {
-        if (next === saved || dirty() || document.activeElement === ta) return;
+        if (next === saved || dirty()) return;
+        const active = document.activeElement;
+        if (active === doc || active === src || doc.contains(active)) return;
         saved = next;
-        ta.value = next;
-        grow();
-        if (mode === 'preview') renderPreview();
+        if (mode === 'source') { src.value = next; grow(); } else doc.innerHTML = mdToHtml(next);
+        showPlaceholder();
         setStatus('');
       },
       destroy() { clearTimeout(timer); return flush(); },
     };
   }
 
-  return { create, mdHtml, _t: { enter, indent, toggleList, backspace, wrapInline, link, pasteInto, renumber, doc } };
+  return { create, mdToHtml, htmlToMd, _t: { enter, indent: indentSrc, renumber, doc: doc_ } };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = NoteEditor;   // for the node-run unit tests

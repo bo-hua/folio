@@ -83,7 +83,7 @@ function timeAgo(iso) {
 }
 function shortPath(p) { if (!p) return ''; const m = p.match(/^\/(?:Users|home)\/[^/]+/); return m ? '~' + p.slice(m[0].length) : p; }
 function railState(s) { return ['needs_you', 'working', 'ready'].includes(s.state) ? s.state : 'ended'; }
-function isEditing() { const a = document.activeElement; return !!(a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT')); }
+function isEditing() { const a = document.activeElement; return !!(a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT' || a.isContentEditable)); }
 function persist() {
   try { localStorage.setItem('folio.collapsed', JSON.stringify([...collapsed])); localStorage.setItem('folio.cam', JSON.stringify(state.cam)); localStorage.setItem('folio.focus', state.focus); } catch (e) { /* private mode etc. */ }
 }
@@ -358,7 +358,7 @@ function noteEditorFor(c, d) {
   closeNoteEditor(c.id);
   const ed = NoteEditor.create({
     value: d.notes || '',
-    placeholder: 'Markdown. “- ” starts a list and Enter keeps it going; Tab nests. Only this section of the file is edited.',
+    placeholder: 'Write. “- ” makes a bullet, Tab nests it. Saved as Markdown in the Notes section of the file.',
     save: async text => {
       await api('PATCH', `/api/items/${encodeURIComponent(c.id)}`, { notes: text });
       if (state.detail && state.detail.id === c.id) state.detail.notes = text;   // keep the next re-render in sync

@@ -281,14 +281,39 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .ins-add{display:flex;gap:6px;margin-top:6px}
 .ins-add input{flex:1;border:1px solid var(--line);border-radius:7px;padding:5px 9px;background:var(--surface);font-size:12.5px}
 .ins-add input::placeholder{color:var(--faint)}
-/* the note editor: a textarea that grows with the text, and its rendered twin */
+/* the note editor: formatted as you type, saved as Markdown */
 .md-editor{display:flex;flex-direction:column;gap:6px}
-.md-src{width:100%;min-height:132px;resize:none;overflow:hidden;border:1px solid var(--line);border-radius:8px;padding:9px 11px;background:var(--surface);color:var(--ink);font-family:var(--sans);font-size:12.5px;line-height:1.6;tab-size:4;transition:border-color var(--dur) var(--ease),box-shadow var(--dur) var(--ease)}
+.md-doc{position:relative;min-height:132px;max-height:50vh;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:9px 11px;background:var(--surface);color:var(--ink);font-size:12.5px;line-height:1.6}
+.md-doc:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow)}
+.md-doc.is-empty::before{content:attr(data-placeholder);position:absolute;color:var(--faint);pointer-events:none}
+.md-doc>:first-child{margin-top:0}
+.md-doc>:last-child{margin-bottom:0}
+.md-doc p{margin:.4em 0}
+.md-doc :is(h1,h2,h3,h4,h5,h6){margin:.7em 0 .25em;font-weight:600;line-height:1.35;color:var(--ink)}
+.md-doc h1{font-size:1.25em}
+.md-doc h2{font-size:1.12em}
+.md-doc :is(h3,h4,h5,h6){font-size:1.02em}
+.md-doc :is(ul,ol){margin:.3em 0;padding-left:1.35em}
+.md-doc li{margin:.14em 0}
+.md-doc li::marker{color:var(--muted)}
+.md-doc li>:is(ul,ol){margin:.1em 0}
+/* a to-do: the box stands in for the list marker */
+.md-doc li.task{list-style:none;margin-left:-1.2em;display:flex;flex-wrap:wrap;align-items:flex-start;gap:6px}
+.md-doc li.task>input{flex:0 0 auto;margin:.34em 0 0;accent-color:var(--accent);cursor:pointer}
+.md-doc li.task>:is(ul,ol){flex:0 0 100%;margin-left:1.2em}
+.md-doc li.task:has(>input:checked){color:var(--muted);text-decoration:line-through}
+.md-doc blockquote{margin:.5em 0;padding:.05em 0 .05em .7em;border-left:2px solid var(--line-2);color:var(--muted)}
+.md-doc pre{margin:.5em 0;padding:8px 10px;background:var(--raised);border-radius:6px;font-family:var(--mono);font-size:11.5px;white-space:pre-wrap}
+.md-doc code{font-family:var(--mono);font-size:11.5px;background:var(--raised);padding:1px 4px;border-radius:3px}
+.md-doc pre code{background:none;padding:0}
+.md-doc a{color:var(--accent);text-decoration:underline;text-underline-offset:2px}
+.md-doc hr{border:0;border-top:1px solid var(--line);margin:.8em 0}
+.md-doc img{max-width:100%;border-radius:6px}
+.md-doc mark{background:var(--accent-soft);color:inherit;padding:0 2px;border-radius:2px}
+/* the Markdown tab, for when you want to see the syntax */
+.md-src{width:100%;min-height:132px;resize:none;overflow:hidden;border:1px solid var(--line);border-radius:8px;padding:9px 11px;background:var(--surface);color:var(--ink);font-family:var(--mono);font-size:11.5px;line-height:1.6;tab-size:4}
 .md-src:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow)}
-.md-src::placeholder{color:var(--faint)}
-.md-preview{min-height:132px;max-height:50vh;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:9px 11px;background:var(--raised)}
 .md-hint{font-size:10.5px;color:var(--faint)}
-.md-empty{color:var(--faint);margin:0}
 .md-status{margin-left:auto;font-size:10.5px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--faint)}
 .sec h3 .md-status+.act{margin-left:6px}
 .ctx a{display:flex;align-items:center;gap:8px;color:var(--accent-ink);text-decoration:none;padding:5px 0;font-size:12.5px}
@@ -346,11 +371,6 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .notes-view a{color:var(--accent);text-decoration:underline;text-underline-offset:2px}
 .notes-view img{max-width:100%;border-radius:6px}
 .notes-view mark{background:var(--accent-soft);color:inherit;padding:0 2px;border-radius:2px}
-/* a to-do is its own bullet: the box replaces the list marker */
-.notes-view li:has(.md-task){list-style:none;margin-left:-1.15em}
-.md-task{display:flex;align-items:flex-start;gap:6px;cursor:pointer}
-.md-task input{margin:.3em 0 0;accent-color:var(--accent);cursor:pointer}
-.md-done{color:var(--muted);text-decoration:line-through}
 .sec.ai{border-left:2px solid #B28BFF;padding-left:10px}
 .ctx-row{display:flex;gap:8px;align-items:baseline;padding:5px 0}
 .ctx-row .lbl{color:var(--accent-ink);font-size:12.5px;text-decoration:none}
