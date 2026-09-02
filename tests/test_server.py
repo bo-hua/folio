@@ -197,6 +197,33 @@ def test_static_shell_and_bind_guard(server):
             parse_bind(bad)
 
 
+def test_deleting_an_area_is_not_one_click(server):
+    """The server's Area delete is an rmtree with no undo, so the page must not put a
+    button in front of it. The Area header carries a ⋯ menu; the delete hides inside,
+    behind a dialog that stays disabled until the Area's name is typed back -- never a
+    native confirm(), which a stray Enter accepts."""
+    with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
+        assert res.status == 200
+        js = res.read().decode()
+    assert "'data-act': 'area-menu'" in js
+    assert "'data-act': 'delete-area'" not in js, "no click anywhere should delete an Area outright"
+    header = js.split("function areaEl(a) {", 1)[1].split("\nfunction ", 1)[0]
+    assert "Delete" not in header, "the Area header must not offer a delete"
+    gate = js.split("function typeToConfirm(", 1)[1].split("\nfunction ", 1)[0]
+    assert "disabled: true" in gate  # the confirm button is born dead
+    assert "if (armed()) close(true)" in gate  # ...and Enter cannot get past the gate either
+    door = js.split("function deleteArea(", 1)[1].split("\n}", 1)[0]
+    assert "window.confirm" not in door and "typeToConfirm({" in door
+    assert "phrase: area.name" in door  # what has to be typed is the Area's own name
+    with urllib.request.urlopen(server["url"] + "/static/style.css", timeout=10) as res:
+        assert res.status == 200 and res.headers["Content-Type"].startswith("text/css")
+        css = res.read().decode()
+    assert ".area-del" not in css, "the hover-to-reveal delete button is gone"
+    for sel in (".area-menu{", ".pop-i.harm{", ".scrim{", ".dlg{"):
+        assert any(l.startswith(sel) for l in css.splitlines()), sel
+    assert "cursor:not-allowed" in next(l for l in css.splitlines() if l.startswith(".dlg-acts .go{"))
+
+
 def test_inspector_title_uses_the_ui_sans_and_can_wrap(server):
     """The card title in the inspector is typeset in the same family as the rest of
     the UI, and is a textarea so a long name wraps instead of being clipped."""

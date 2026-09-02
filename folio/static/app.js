@@ -126,7 +126,7 @@ async function loadDetail(id) {
   catch (e) { /* card may have vanished; the next refresh clears the selection */ }
 }
 async function refresh() { try { await load(); render(); if (state.selected) loadDetail(state.selected); } catch (e) { toastError(e); } }
-function canRefresh() { return !ptr && !sdrag && !isEditing() && inFlight === 0 && !document.hidden && !$('#toast').classList.contains('show'); }
+function canRefresh() { return !ptr && !sdrag && !isEditing() && !popEl && !$('.scrim') && inFlight === 0 && !document.hidden && !$('#toast').classList.contains('show'); }  // an open menu or confirm dialog owns the canvas until it closes
 
 // mutation helper: run the request, reload, toast (with an inverse request as Undo)
 async function mutate(run, { msg, undo, error = 'Something went wrong' } = {}) {
@@ -223,7 +223,7 @@ function areaEl(a) {
         : 'No cards yet — press + or drop a session here'));
   return h('section', { class: 'area', 'data-area': a.id },
     h('header', { class: 'area-head' }, h('h2', { class: 'area-title' }, a.name), meta,
-      h('button', { class: 'area-del', 'data-act': 'delete-area', title: 'Delete this Area and every card in it' }, 'Delete area'),
+      h('button', { class: `area-menu${popArea === a.id ? ' open' : ''}`, 'data-act': 'area-menu', 'aria-haspopup': 'menu', title: `More for ${a.name}` }, '\u22EF'),
       h('button', { class: 'area-add', 'data-act': 'add-to-area', title: `New idea in ${a.name}` }, '+')),
     h('div', { class: 'cols' }, ...colEls));
 }
@@ -578,18 +578,110 @@ rail.addEventListener('pointerup', endSessDrag); rail.addEventListener('pointerc
 $$('.rail-filters .chip-btn[data-f]').forEach(b => b.addEventListener('click', () => { state.railFilter = b.dataset.f; $$('.rail-filters .chip-btn[data-f]').forEach(x => x.classList.toggle('on', x === b)); renderRail(); }));
 $('#allRepos').addEventListener('change', e => { state.allRepos = e.target.checked; refresh(); });
 
+// ------------------------------------------------------------------ area menu + type-to-confirm
+// Deleting an Area is the one action folio cannot take back: the server rmtree's the
+// directory and every Markdown file under it, and there is no undo to offer. So it is
+// not a button sitting in the header any more. It hides in a menu, under a harmless
+// first item, behind a dialog that stays inert until you type the Area's name back.
+let popArea = null, popEl = null;
+function closePop() {
+  if (!popEl) return;
+  popEl.remove(); popEl = null; popArea = null;
+  document.removeEventListener('pointerdown', onPopOut, true);
+  document.removeEventListener('keydown', onPopKey, true);
+  window.removeEventListener('wheel', closePop, true);
+  window.removeEventListener('resize', closePop);
+  $$('.area-menu.open').forEach(b => b.classList.remove('open'));
+}
+const onPopOut = e => { if (popEl && !popEl.contains(e.target)) closePop(); };
+const onPopKey = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closePop(); } };
+function openAreaMenu(btn, area) {
+  if (popArea === area.id) { closePop(); return; }   // the ⋯ toggles
+  closePop();
+  popArea = area.id; btn.classList.add('open');
+  popEl = h('div', { class: 'pop', role: 'menu' },
+    h('button', { class: 'pop-i', role: 'menuitem', onclick: () => { closePop(); newCard({ area: area.id }); } }, `New idea in ${area.name}`),
+    h('i', { class: 'pop-sep' }),
+    h('button', { class: 'pop-i harm', role: 'menuitem', onclick: () => { closePop(); deleteArea(area); } }, 'Delete this Area…'));
+  document.body.appendChild(popEl);
+  const r = btn.getBoundingClientRect(), m = popEl.getBoundingClientRect();
+  popEl.style.left = Math.max(8, Math.min(r.right - m.width, window.innerWidth - m.width - 8)) + 'px';
+  popEl.style.top = (r.bottom + 6 + m.height > window.innerHeight ? Math.max(8, r.top - 6 - m.height) : r.bottom + 6) + 'px';
+  document.addEventListener('pointerdown', onPopOut, true);
+  document.addEventListener('keydown', onPopKey, true);
+  window.addEventListener('wheel', closePop, true);
+  window.addEventListener('resize', closePop);
+}
+
+// What deleting an Area actually costs, counted from the tree the canvas already has.
+// Cards filed elsewhere whose parent lived here survive -- the server clears their
+// parent -- so they are named separately from the ones that are destroyed.
+function areaDamage(a) {
+  const gone = CARDS.filter(c => c.area === a.id), goneIds = new Set(gone.map(c => c.id));
+  const orphaned = CARDS.filter(c => c.area !== a.id && c.parent && goneIds.has(c.parent));
+  return { cards: gone.length, orphaned: orphaned.length, dir: `${(OV && OV.data_dir) || '~'}/items/${a.name}` };
+}
+function deleteArea(area) {
+  const d = areaDamage(area), n = (k, one, many) => `${k} ${k === 1 ? one : many}`;
+  typeToConfirm({
+    title: `Delete the Area “${area.name}”?`,
+    damage: [
+      d.cards ? `${n(d.cards, 'card', 'cards')} filed here — and every Markdown file behind ${d.cards === 1 ? 'it' : 'them'} — will be deleted.` : 'No cards are filed here.',
+      d.orphaned ? `${n(d.orphaned, 'card', 'cards')} in other Areas will lose ${d.orphaned === 1 ? 'its parent' : 'their parent'} and move to the top level.` : null,
+      h('span', { class: 'path' }, d.dir),
+    ].filter(Boolean),
+    note: 'Nothing here can be undone — folio has no trash, and the Undo toast cannot bring an Area back.',
+    phrase: area.name,
+    label: 'Delete this Area',
+  }).then(ok => {
+    if (ok) mutate(() => api('DELETE', `/api/areas/${encodeURIComponent(area.name)}`), { msg: `Deleted area ${area.name}` });
+  });
+}
+
+// The gate itself: the typed text must be the phrase, exactly. Surrounding whitespace is
+// forgiven (it is invisible, and a paste often carries it); nothing else is -- wrong case
+// or a near miss keeps the button dead, which is the whole point of asking.
+const confirmMatches = (typed, phrase) => typed.trim() === phrase.trim() && phrase.trim() !== '';
+function typeToConfirm({ title, damage, note, phrase, label }) {
+  return new Promise(resolve => {
+    const prev = document.activeElement;
+    const input = h('input', { type: 'text', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off', placeholder: phrase, 'aria-label': `Type ${phrase} to confirm` });
+    const go = h('button', { class: 'go', type: 'submit', disabled: true, title: `Type “${phrase}” above to arm this` }, label);
+    const cancel = h('button', { class: 'cancel', type: 'button' }, 'Cancel');
+    const armed = () => confirmMatches(input.value, phrase);
+    input.addEventListener('input', () => { const ok = armed(); go.disabled = !ok; go.classList.toggle('armed', ok); });
+    const dlg = h('form', { class: 'dlg', role: 'dialog', 'aria-modal': 'true' },
+      h('h3', {}, title),
+      h('div', { class: 'dlg-damage' }, ...damage.map(d => h('div', {}, d))),
+      note ? h('p', { class: 'dlg-note' }, note) : null,
+      h('label', { class: 'dlg-type' }, h('span', {}, 'Type ', h('b', {}, phrase), ' to confirm'), input),
+      h('div', { class: 'dlg-acts' }, cancel, go));
+    const scrim = h('div', { class: 'scrim' }, dlg);
+    const close = ok => { document.removeEventListener('keydown', onKey, true); scrim.remove(); if (prev && prev.focus) prev.focus(); resolve(ok); };
+    dlg.addEventListener('submit', e => { e.preventDefault(); if (armed()) close(true); });   // Enter only lands when the name matches
+    cancel.addEventListener('click', () => close(false));
+    scrim.addEventListener('pointerdown', e => { if (e.target === scrim) close(false); });
+    const onKey = e => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(false); return; }
+      if (e.key !== 'Tab') return;                                        // focus stays in the dialog
+      const f = [...dlg.querySelectorAll('input, button:not([disabled])')];
+      if (!f.length) return;
+      const edge = e.shiftKey ? f[0] : f[f.length - 1];
+      if (document.activeElement === edge) { e.preventDefault(); (e.shiftKey ? f[f.length - 1] : f[0]).focus(); }
+    };
+    document.addEventListener('keydown', onKey, true);
+    document.body.appendChild(scrim);
+    requestAnimationFrame(() => { scrim.classList.add('show'); input.focus(); });
+  });
+}
+
 // ------------------------------------------------------------------ clicks: canvas buttons, inspector
 stage.addEventListener('click', e => {
   const act = e.target.closest('[data-act]'); if (!act || e.target.closest('.inspector')) return;
   const a = act.dataset.act;
   if (a === 'toggle') toggleCollapse(act.closest('.card').dataset.id);
   if (a === 'add-to-area') newCard({ area: act.closest('.area').dataset.area });
-  if (a === 'delete-area') {
-    const area = areaById(act.closest('.area').dataset.area);
-    const what = area.count ? ` and the ${area.count} card${area.count === 1 ? '' : 's'} in it` : '';
-    if (!window.confirm(`Delete area "${area.name}"${what}? The directory and every Markdown file inside it will be removed.`)) return;
-    mutate(() => api('DELETE', `/api/areas/${encodeURIComponent(area.name)}`), { msg: `Deleted area ${area.name}` });
-  }
+  if (a === 'area-menu') openAreaMenu(act, areaById(act.closest('.area').dataset.area));
 });
 $('#inspector').addEventListener('click', e => {
   const act = e.target.closest('[data-act]'); if (!act) return; const a = act.dataset.act, c = cardById(state.selected); if (!c) return;
