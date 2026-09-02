@@ -271,3 +271,27 @@ def test_sessions_carry_the_title_claude_code_gave_them(server, tmp_path, monkey
     # nothing derived leaks into the Markdown you own
     files = list((cfg.items_dir / "Ranking").glob("*.md"))
     assert files and all("long-term ranking objective" not in p.read_text() for p in files)
+
+
+def test_note_editor_is_served_and_wired_into_the_page(server):
+    """The Markdown note editor is a real asset the shell loads, and the notes
+    section is built from it rather than from a bare textarea."""
+    with urllib.request.urlopen(server["url"] + "/static/editor.js", timeout=10) as res:
+        assert res.status == 200 and res.headers["Content-Type"].startswith(("application/javascript", "text/javascript"))
+        js = res.read().decode()
+    # the behaviours that make it feel like Notion/Obsidian rather than a text box
+    for fn in ("function enter(", "function indent(", "function toggleList(", "function renumber(", "function mdHtml("):
+        assert fn in js
+    assert "execCommand('insertText'" in js  # edits must not destroy the browser's undo stack
+    with urllib.request.urlopen(server["url"] + "/", timeout=10) as res:
+        shell = res.read()
+    assert b'<script src="/static/editor.js">' in shell  # loaded before app.js, which uses it
+    assert shell.index(b"/static/editor.js") < shell.index(b"/static/app.js")
+    with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
+        app_js = res.read().decode()
+    assert "NoteEditor.create(" in app_js
+    assert "'data-act': 'notes'" not in app_js  # the editor owns saving now, not the blur handler
+    with urllib.request.urlopen(server["url"] + "/static/style.css", timeout=10) as res:
+        css = res.read().decode()
+    for rule in (".md-src{", ".md-preview{", ".md-task{"):
+        assert rule in css

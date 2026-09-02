@@ -330,9 +330,8 @@ function renderInspector() {
   // AI state
   if (d && d.ai_state) body.appendChild(h('div', { class: 'sec ai' }, h('h3', {}, 'AI state', h('span', { class: 'muted', style: 'font-weight:400;letter-spacing:0;text-transform:none' }, 'from the `## AI state` section')), h('div', { class: 'notes-view', html: d.ai_state_html })));
   // notes
-  body.appendChild(h('div', { class: 'sec' }, h('h3', {}, 'Notes'), d
-    ? h('textarea', { class: 'notes', 'data-act': 'notes', placeholder: 'Free-form Markdown. Only this section is edited; the rest of the file is left alone.' }, d.notes || '')
-    : h('div', { class: 'muted', style: 'font-size:12px' }, 'Loading…')));
+  if (d) { const ed = noteEditorFor(c, d); body.appendChild(h('div', { class: 'sec' }, h('h3', {}, 'Notes', ed.status, ed.modeBtn), ed.el)); }
+  else body.appendChild(h('div', { class: 'sec' }, h('h3', {}, 'Notes'), h('div', { class: 'muted', style: 'font-size:12px' }, 'Loading…')));
   // context
   if (d) {
     const isUrl = ref => /^https?:\/\//i.test(ref);
@@ -347,6 +346,37 @@ function renderInspector() {
   body.appendChild(h('div', { class: 'sec' }, h('button', { class: 'danger', 'data-act': 'delete' }, n ? `Delete card and ${n} inside…` : 'Delete card…'), d ? h('div', { class: 'ins-foot' }, d.path) : ''));
   ins.appendChild(body);
 }
+
+// ------------------------------------------------------------------ notes editor
+/* One editor instance per open card, kept across inspector re-renders so the poll
+   cannot pull the text out from under you mid-sentence. It saves itself (debounced,
+   on blur, on ⌘S) rather than going through mutate(), which would re-render the
+   panel -- and blur the box -- on every pause in typing. */
+let noteEd = null;
+function noteEditorFor(c, d) {
+  if (noteEd && noteEd.id === c.id) { noteEd.ed.setRemote(d.notes || ''); return noteEd.ed; }
+  closeNoteEditor(c.id);
+  const ed = NoteEditor.create({
+    value: d.notes || '',
+    placeholder: 'Markdown. “- ” starts a list and Enter keeps it going; Tab nests. Only this section of the file is edited.',
+    save: async text => {
+      await api('PATCH', `/api/items/${encodeURIComponent(c.id)}`, { notes: text });
+      if (state.detail && state.detail.id === c.id) state.detail.notes = text;   // keep the next re-render in sync
+    },
+    onError: toastError,
+  });
+  noteEd = { id: c.id, ed };
+  return ed;
+}
+function closeNoteEditor(keepId) { if (noteEd && noteEd.id !== keepId) { noteEd.ed.destroy(); noteEd = null; } }
+// a closed tab must not eat an unsaved note
+window.addEventListener('pagehide', () => {
+  if (!noteEd || !noteEd.ed.isDirty()) return;
+  fetch(`/api/items/${encodeURIComponent(noteEd.id)}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ notes: noteEd.ed.value() }), keepalive: true,
+  });
+});
 
 // ------------------------------------------------------------------ camera
 function applyCam(animate) {
@@ -371,7 +401,7 @@ function ensureVisible(r, pad = 48) {
 function flashCard(id) { const el = $(`.card[data-id="${id}"]`); if (el) { el.classList.add('flash'); el.addEventListener('animationend', () => el.classList.remove('flash'), { once: true }); } }
 
 // ------------------------------------------------------------------ select / reveal / collapse
-function select(id) { if (state.selected !== id) { state.detail = null; state.resumeOpen = null; } state.selected = id; render(); if (id) loadDetail(id); location.hash = id ? `card=${id}` : ''; }
+function select(id) { closeNoteEditor(id); if (state.selected !== id) { state.detail = null; state.resumeOpen = null; } state.selected = id; render(); if (id) loadDetail(id); location.hash = id ? `card=${id}` : ''; }
 function reveal(id, flash = true) {
   let opened = false; ancestors(id).forEach(pid => { if (collapsed.has(pid)) { collapsed.delete(pid); opened = true; } });
   select(id);
@@ -570,7 +600,6 @@ $('#inspector').addEventListener('click', e => {
 $('#inspector').addEventListener('change', e => {
   const c = cardById(state.selected); if (!c) return; const a = e.target.dataset.act;
   if (a === 'rename') { const name = e.target.value.replace(/\s+/g, ' ').trim(); if (name && name !== c.name) mutate(() => api('PATCH', `/api/items/${encodeURIComponent(c.id)}`, { name }), {}); else { e.target.value = c.name; fitTitle(e.target); } }
-  if (a === 'notes') mutate(() => api('PATCH', `/api/items/${encodeURIComponent(c.id)}`, { notes: e.target.value }), { msg: 'Notes saved' });
   if (a === 'park-note' && e.target.value.trim() !== c.parkNote) {
     const note = e.target.value.trim();
     mutate(() => api('PATCH', `/api/items/${encodeURIComponent(c.id)}`, { status: 'parked', park_note: note }), { msg: note ? 'Park note saved' : 'Park note cleared' });
