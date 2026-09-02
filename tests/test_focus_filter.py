@@ -39,7 +39,8 @@ function ancestors(id) { const out = []; let c = cardById(id); while (c && c.par
 EPILOGUE = """
 computeVisible();
 console.log(JSON.stringify({ visible: VISIBLE === null ? null : [...VISIBLE].sort(), hidden: hiddenCount(),
-  topKids: CARDS.filter(c => !c.parent).map(c => [c.id, visKidsOf(c.id).map(k => k.id)]) }));
+  topKids: CARDS.filter(c => !c.parent).map(c => [c.id, visKidsOf(c.id).map(k => k.id)]),
+  rail: SESSIONS.filter(railVisible).map(s => s.id) }));
 """
 
 
@@ -162,3 +163,58 @@ def test_the_open_card_and_its_ancestors_stay_on_the_canvas(tmp_path):
         got = run(tmp_path, TREE, mode, selected="c1")
         assert "c1" in got["visible"] and "c" in got["visible"], mode
         assert "d" not in got["visible"] or mode == "done", mode
+
+
+# --------------------------------------------------------------------------- #
+# the sessions rail -- it shows what the canvas shows
+# --------------------------------------------------------------------------- #
+
+# One session on each kind of card, plus one attached to nothing.
+RAIL = [
+    {"id": "s-a1", "item": "a1", "state": "ended"},    # on a done leaf
+    {"id": "s-b1", "item": "b1", "state": "working"},  # on live work under a done parent
+    {"id": "s-c", "item": "c", "state": "ended"},      # on a wholly finished branch
+    {"id": "s-free", "item": None, "state": "ready"},  # unattached
+]
+
+
+@node
+def test_the_rail_shows_every_session_when_nothing_is_filtered(tmp_path):
+    got = run(tmp_path, TREE, "all", sessions=RAIL)
+    assert got["rail"] == ["s-a1", "s-b1", "s-c", "s-free"]
+
+
+@node
+def test_hide_done_drops_the_rows_whose_cards_left_the_canvas(tmp_path):
+    got = run(tmp_path, TREE, "done", sessions=RAIL)
+    # a1 and c are hidden by "hide done", so their sessions go with them. b1 is alive
+    # and the unattached row has no card to follow -- both stay.
+    assert got["rail"] == ["s-b1", "s-free"]
+
+
+@node
+def test_an_unattached_session_is_never_hidden(tmp_path):
+    for mode in ("done", "live"):
+        got = run(tmp_path, TREE, mode, sessions=[{"id": "s-free", "item": None, "state": "ended"}])
+        assert got["rail"] == ["s-free"], mode
+
+
+@node
+def test_a_session_asking_for_you_survives_every_filter(tmp_path):
+    # c1 is done and has no live work, but the card is kept because it needs you --
+    # so the row it would be hidden with stays in the rail too.
+    for mode in ("done", "live"):
+        got = run(tmp_path, TREE, mode, sessions=[{"id": "s1", "item": "c1", "state": "needs_you"}])
+        assert got["rail"] == ["s1"], mode
+
+
+@node
+def test_focus_leaves_only_the_rows_on_live_cards(tmp_path):
+    got = run(tmp_path, TREE, "live", sessions=RAIL)
+    assert got["rail"] == ["s-b1", "s-free"]
+
+
+@node
+def test_the_open_card_keeps_its_rows_in_the_rail(tmp_path):
+    got = run(tmp_path, TREE, "done", sessions=RAIL, selected="c")
+    assert "s-c" in got["rail"]
