@@ -75,6 +75,10 @@ function computeVisible() {
   // whatever you have open stays on the canvas, filter or not, with its ancestors
   if (state.selected && cardById(state.selected)) { VISIBLE.add(state.selected); ancestors(state.selected).forEach(id => VISIBLE.add(id)); }
 }
+// A session goes where its card goes: when the filter drops the card, the rail drops
+// its sessions too. An unattached row has no card to follow, so it always stays --
+// and a session that needs you keeps its card visible, so it can never be hidden here.
+const railVisible = s => { const c = s.item && cardById(s.item); return !c || isVisible(c); };
 const hiddenCount = () => VISIBLE ? CARDS.length - VISIBLE.size : 0;
 function timeAgo(iso) {
   if (!iso) return '—';
@@ -261,6 +265,8 @@ function renderRail() {
   let list = SESSIONS.slice();
   if (state.railFilter === 'unattached') list = list.filter(s => !s.item);
   if (state.railFilter === 'attention') list = list.filter(s => s.state === 'needs_you');
+  const shown = list.filter(railVisible), hidden = list.length - shown.length; // a row goes wherever its card went
+  list = shown;
   $('#railCount').textContent = `${list.length}/${SESSIONS.length}`;
   let any = false;
   for (const [st, label] of RAIL_GROUPS) {
@@ -277,7 +283,9 @@ function renderRail() {
     }
     rail.appendChild(g);
   }
-  if (!any) rail.appendChild(h('div', { class: 'rail-empty' }, state.railFilter === 'unattached' ? 'Every session is attached to a card.' : state.railFilter === 'attention' ? 'Nothing needs you right now.' : 'No Claude sessions observed yet. Install the hook (folio hooks install) and start one.'));
+  if (!any) rail.appendChild(h('div', { class: 'rail-empty' }, hidden ? 'Every session here is on a card the filter hides.' : state.railFilter === 'unattached' ? 'Every session is attached to a card.' : state.railFilter === 'attention' ? 'Nothing needs you right now.' : 'No Claude sessions observed yet. Install the hook (folio hooks install) and start one.'));
+  if (hidden) rail.appendChild(h('button', { class: 'rail-hidden', title: `Their cards are hidden by the “${FOCUS_MODES[state.focus].label.toLowerCase()}” filter — click to show everything.`, onclick: () => setFocus('all') },
+    `${hidden} on hidden card${hidden === 1 ? '' : 's'}`));
 }
 function fitTitle(el) { if (!el.isConnected) return; el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
 function renderInspector() {
@@ -323,8 +331,10 @@ function renderInspector() {
   }
   body.appendChild(ss);
   // children
-  const ks = h('div', { class: 'sec' }, h('h3', {}, 'Children', h('span', { class: 'n' }, String(kids.length)), visKidsOf(c.id).length ? h('button', { class: 'act', 'data-act': 'toggle-kids' }, collapsed.has(c.id) ? 'Expand' : 'Collapse') : ''));
-  for (const k of kids) { const ka = attn(k.id); ks.appendChild(h('button', { class: `ins-kid${isVisible(k) ? '' : ' dim'}`, style: 'width:100%;text-align:left', 'data-act': 'reveal', 'data-id': k.id, title: isVisible(k) ? null : 'Hidden by the current filter — opening it brings it back onto the canvas' }, h('i', { class: `glyph ${lifecycle(k)}` }), h('span', {}, k.name), h('span', { class: 'st' }, ka.needs ? h('i', { class: 'dot needs_you' }) : ka.working ? h('i', { class: 'dot working' }) : lifecycle(k)), h('span', { class: 'arrow' }, '›'))); }
+  const shownKids = visKidsOf(c.id), hiddenKids = kids.length - shownKids.length; // the list obeys the filter, like the canvas and the rail
+  const ks = h('div', { class: 'sec' }, h('h3', {}, 'Children', h('span', { class: 'n' }, hiddenKids ? `${shownKids.length}/${kids.length}` : String(kids.length)), shownKids.length ? h('button', { class: 'act', 'data-act': 'toggle-kids' }, collapsed.has(c.id) ? 'Expand' : 'Collapse') : ''));
+  for (const k of shownKids) { const ka = attn(k.id); ks.appendChild(h('button', { class: 'ins-kid', style: 'width:100%;text-align:left', 'data-act': 'reveal', 'data-id': k.id }, h('i', { class: `glyph ${lifecycle(k)}` }), h('span', {}, k.name), h('span', { class: 'st' }, ka.needs ? h('i', { class: 'dot needs_you' }) : ka.working ? h('i', { class: 'dot working' }) : lifecycle(k)), h('span', { class: 'arrow' }, '›'))); }
+  if (hiddenKids) ks.appendChild(h('button', { class: 'ins-hidden', 'data-act': 'show-all', title: `Hidden by the “${FOCUS_MODES[state.focus].label.toLowerCase()}” filter — click to show everything.` }, `${hiddenKids} hidden by the filter`));
   ks.appendChild(h('form', { class: 'ins-add', 'data-act': 'add-kid-form' }, h('input', { placeholder: 'New child idea…', 'aria-label': 'New child idea' }), h('button', { class: 'mini', type: 'submit' }, 'Add')));
   body.appendChild(ks);
   // AI state
@@ -560,6 +570,7 @@ $('#inspector').addEventListener('click', e => {
   if (a === 'move-out') { const par = cardById(c.parent); if (par) moveCard(c, par.parent ? { parent: par.parent } : { parent: null, area: par.area }, par.parent ? `Moved “${c.name}” up under “${cardById(par.parent).name}”` : `Moved “${c.name}” out to ${par.area} — it’s top-level now`); }
   if (a === 'reveal') reveal(act.dataset.id);
   if (a === 'toggle-kids') toggleCollapse(c.id);
+  if (a === 'show-all') setFocus('all');
   if (a === 'attach-hint') { hint('Drag a session from the rail onto this card'); $('#rail').scrollTo({ top: 0, behavior: 'smooth' }); }
   if (a === 'remove-ctx' && state.detail) { const ctx = state.detail.context.filter((_, i) => i !== +act.dataset.idx); mutate(() => api('PATCH', `/api/items/${encodeURIComponent(c.id)}`, { context: ctx }), { msg: 'Removed context ref' }); }
   if (a === 'delete') {
