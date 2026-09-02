@@ -488,6 +488,8 @@ stage.addEventListener('pointerup', e => {
 stage.addEventListener('pointercancel', e => { if (sdrag) endSessDrag(e); if (ptr && ptr.mode === 'card') endCardDrag(ptr); ptr = null; stage.classList.remove('panning'); });
 stage.addEventListener('dblclick', e => { const card = e.target.closest('.card'); if (card && kidsOf(card.dataset.id).length) toggleCollapse(card.dataset.id); });
 stage.addEventListener('wheel', e => {
+  // the inspector sits inside the stage, so its wheel events bubble here. It scrolls itself.
+  if (e.target.closest('.inspector')) return;
   e.preventDefault();
   if (e.ctrlKey || e.metaKey) { const r = stage.getBoundingClientRect(); zoomAt(e.clientX - r.left, e.clientY - r.top, Math.exp(-e.deltaY * 0.0035)); }
   else setCam(state.cam.x - e.deltaX, state.cam.y - e.deltaY, state.cam.s, false);

@@ -213,6 +213,24 @@ def test_inspector_title_uses_the_ui_sans_and_can_wrap(server):
     assert "$('.ins-title textarea')" in js  # focus-on-create still finds the field
 
 
+def test_wheel_over_the_inspector_scrolls_it_rather_than_panning(server):
+    """The inspector lives inside .stage, so its wheel events bubble to the pan
+    handler. Without a guard ahead of preventDefault() the panel cannot scroll at
+    all -- the wheel moves the camera instead, and long card details are unreachable."""
+    with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
+        assert res.status == 200
+        js = res.read().decode()
+    handler = js.split("stage.addEventListener('wheel'", 1)[1].split("{ passive: false }", 1)[0]
+    assert "closest('.inspector')" in handler, "wheel over the inspector would pan the canvas"
+    bail = handler.index("closest('.inspector')")
+    swallow = handler.index("e.preventDefault()")
+    assert bail < swallow and "return" in handler[bail:swallow]
+    with urllib.request.urlopen(server["url"] + "/static/style.css", timeout=10) as res:
+        css = res.read().decode()
+    for sel in (".rail-body{", ".ins-body{"):  # both side panels own their own scrolling
+        assert "overflow-y:auto" in next(l for l in css.splitlines() if l.startswith(sel))
+
+
 def test_overview_flags_a_server_older_than_its_code(server, monkeypatch):
     """The UI is served from disk; the process is not. Report the mismatch.
 
