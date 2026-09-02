@@ -331,8 +331,10 @@ function renderInspector() {
   }
   body.appendChild(ss);
   // children
-  const ks = h('div', { class: 'sec' }, h('h3', {}, 'Children', h('span', { class: 'n' }, String(kids.length)), visKidsOf(c.id).length ? h('button', { class: 'act', 'data-act': 'toggle-kids' }, collapsed.has(c.id) ? 'Expand' : 'Collapse') : ''));
-  for (const k of kids) { const ka = attn(k.id); ks.appendChild(h('button', { class: `ins-kid${isVisible(k) ? '' : ' dim'}`, style: 'width:100%;text-align:left', 'data-act': 'reveal', 'data-id': k.id, title: isVisible(k) ? null : 'Hidden by the current filter — opening it brings it back onto the canvas' }, h('i', { class: `glyph ${lifecycle(k)}` }), h('span', {}, k.name), h('span', { class: 'st' }, ka.needs ? h('i', { class: 'dot needs_you' }) : ka.working ? h('i', { class: 'dot working' }) : lifecycle(k)), h('span', { class: 'arrow' }, '›'))); }
+  const shownKids = visKidsOf(c.id), hiddenKids = kids.length - shownKids.length; // the list obeys the filter, like the canvas and the rail
+  const ks = h('div', { class: 'sec' }, h('h3', {}, 'Children', h('span', { class: 'n' }, hiddenKids ? `${shownKids.length}/${kids.length}` : String(kids.length)), shownKids.length ? h('button', { class: 'act', 'data-act': 'toggle-kids' }, collapsed.has(c.id) ? 'Expand' : 'Collapse') : ''));
+  for (const k of shownKids) { const ka = attn(k.id); ks.appendChild(h('button', { class: 'ins-kid', style: 'width:100%;text-align:left', 'data-act': 'reveal', 'data-id': k.id }, h('i', { class: `glyph ${lifecycle(k)}` }), h('span', {}, k.name), h('span', { class: 'st' }, ka.needs ? h('i', { class: 'dot needs_you' }) : ka.working ? h('i', { class: 'dot working' }) : lifecycle(k)), h('span', { class: 'arrow' }, '›'))); }
+  if (hiddenKids) ks.appendChild(h('button', { class: 'ins-hidden', 'data-act': 'show-all', title: `Hidden by the “${FOCUS_MODES[state.focus].label.toLowerCase()}” filter — click to show everything.` }, `${hiddenKids} hidden by the filter`));
   ks.appendChild(h('form', { class: 'ins-add', 'data-act': 'add-kid-form' }, h('input', { placeholder: 'New child idea…', 'aria-label': 'New child idea' }), h('button', { class: 'mini', type: 'submit' }, 'Add')));
   body.appendChild(ks);
   // AI state
@@ -566,6 +568,7 @@ $('#inspector').addEventListener('click', e => {
   if (a === 'move-out') { const par = cardById(c.parent); if (par) moveCard(c, par.parent ? { parent: par.parent } : { parent: null, area: par.area }, par.parent ? `Moved “${c.name}” up under “${cardById(par.parent).name}”` : `Moved “${c.name}” out to ${par.area} — it’s top-level now`); }
   if (a === 'reveal') reveal(act.dataset.id);
   if (a === 'toggle-kids') toggleCollapse(c.id);
+  if (a === 'show-all') setFocus('all');
   if (a === 'attach-hint') { hint('Drag a session from the rail onto this card'); $('#rail').scrollTo({ top: 0, behavior: 'smooth' }); }
   if (a === 'remove-ctx' && state.detail) { const ctx = state.detail.context.filter((_, i) => i !== +act.dataset.idx); mutate(() => api('PATCH', `/api/items/${encodeURIComponent(c.id)}`, { context: ctx }), { msg: 'Removed context ref' }); }
   if (a === 'delete') {

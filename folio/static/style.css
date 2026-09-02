@@ -277,7 +277,8 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .mini.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .ins-kid{display:flex;align-items:center;gap:8px;padding:6px 6px;margin:0 -6px;border-radius:7px;font-size:12.5px;color:var(--ink)}
 .ins-kid:hover{background:var(--raised)}
-.ins-kid.dim{opacity:.5}
+.ins-hidden{display:block;width:100%;margin-top:6px;padding:5px 8px;border:1px dashed var(--line-2);border-radius:7px;font-size:11.5px;color:var(--muted);text-align:center;transition:color .15s,border-color .15s}
+.ins-hidden:hover{color:var(--ink);border-color:var(--muted);border-style:solid}
 .ins-kid .st{margin-left:auto;font-size:11px;color:var(--muted)}
 .ins-kid .arrow{color:var(--faint)}
 .ins-add{display:flex;gap:6px;margin-top:6px}
