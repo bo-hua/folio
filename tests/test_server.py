@@ -369,6 +369,20 @@ def test_the_placeholder_gets_out_of_the_way(server):
         assert tag in blank
 
 
+def test_a_link_in_a_note_opens_on_modifier_click(server):
+    """A link in the notes is editable text, so a plain click has to keep placing
+    the caret; ⌘-click (Ctrl-click elsewhere) opens it in a new tab. The hint bar
+    says so, and the cursor turns into a pointer while the modifier is down."""
+    with urllib.request.urlopen(server["url"] + "/static/editor.js", timeout=10) as res:
+        js = res.read().decode()
+    assert "function linkTarget(" in js                       # the pure part, covered by editor_test.js
+    assert "window.open(href, '_blank', 'noopener')" in js    # a new tab, not a navigation away from folio
+    assert "opens a link" in js                               # the hint bar teaches it
+    with urllib.request.urlopen(server["url"] + "/static/style.css", timeout=10) as res:
+        css = res.read().decode()
+    assert ".mod-held .md-doc a{cursor:pointer}" in css
+
+
 def test_brief_packs_the_card_and_its_surroundings_for_a_prompt(server):
     """GET /api/items/<id>/brief is what the card's copy button puts on the clipboard:
     the card, its notes and links, its sessions (branch, cwd), its children, and the

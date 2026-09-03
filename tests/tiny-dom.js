@@ -1,9 +1,9 @@
 /* A 60-line stand-in for the DOM, enough to run htmlToMd() under node.
 
-   The editor's serializer walks childNodes / tagName / textContent / getAttribute,
-   so a real browser is not needed to test it — only well-formed HTML, which is
-   exactly what mdToHtml() produces. Void elements are the ones that HTML says
-   never have a closing tag. */
+   The editor's serializer walks childNodes / tagName / textContent / getAttribute
+   (and its click handling walks parentNode), so a real browser is not needed to
+   test them — only well-formed HTML, which is exactly what mdToHtml() produces.
+   Void elements are the ones that HTML says never have a closing tag. */
 'use strict';
 
 const VOID = new Set(['BR', 'HR', 'IMG', 'INPUT', 'META', 'LINK']);
@@ -23,6 +23,7 @@ function element(tagName, attrs) {
   return el;
 }
 const textNode = data => ({ nodeType: 3, textContent: data, childNodes: [] });
+const append = (parent, child) => { child.parentNode = parent; parent.childNodes.push(child); };
 
 function parseHtml(html) {
   const root = element('DIV', {});
@@ -31,7 +32,7 @@ function parseHtml(html) {
   const re = /<\/?([a-zA-Z][\w-]*)((?:\s+[\w-]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?)*)\s*\/?>/g;
   let at = 0, m;
   while ((m = re.exec(html))) {
-    if (m.index > at) top().childNodes.push(textNode(decode(html.slice(at, m.index))));
+    if (m.index > at) append(top(), textNode(decode(html.slice(at, m.index))));
     at = m.index + m[0].length;
     const tag = m[1].toUpperCase();
     if (m[0][1] === '/') {
@@ -43,10 +44,10 @@ function parseHtml(html) {
     let a;
     while ((a = ar.exec(m[2]))) attrs[a[1]] = decode(a[2] ?? a[3] ?? a[4] ?? '');
     const el = element(tag, attrs);
-    top().childNodes.push(el);
+    append(top(), el);
     if (!VOID.has(tag)) stack.push(el);
   }
-  if (at < html.length) top().childNodes.push(textNode(decode(html.slice(at))));
+  if (at < html.length) append(top(), textNode(decode(html.slice(at))));
   return root;
 }
 

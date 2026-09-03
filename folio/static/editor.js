@@ -17,7 +17,9 @@
      tests/editor_test.js.
    * The Markdown toggle swaps in a plain textarea over the same note, for when
      you want to see or paste raw syntax. Its Enter/Tab helpers are the pure
-     transforms further down. */
+     transforms further down.
+   * A link is text you can edit, so a plain click puts the caret in it, as in any
+     editor; ⌘-click (Ctrl-click elsewhere) opens it in a new tab. */
 'use strict';
 
 var NoteEditor = (function () {
@@ -30,6 +32,7 @@ var NoteEditor = (function () {
   const ZW = '\u200b';                                    // parking spot for the caret after an inline conversion
   const MAC = typeof navigator === 'undefined' || /Mac|iP(hone|ad)/.test(navigator.platform || navigator.userAgent);
   const CMD = MAC ? '⌘' : 'Ctrl+';
+  const MODCLICK = MAC ? '⌘‑click' : 'Ctrl‑click';   // non-breaking hyphen: the hint bar must not split it
 
   const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' };
   const esc = s => s.replace(/[&<>"]/g, c => ESC[c]);
@@ -274,12 +277,26 @@ var NoteEditor = (function () {
 
   // ================================================================ the widget
   const mod = e => e.metaKey || e.ctrlKey;
+  const modClick = e => (MAC ? e.metaKey : e.ctrlKey);   // on a Mac, Ctrl-click is the context menu and stays the browser's
   const sel = () => window.getSelection();
   const BLOCKS = 'P,DIV,LI,H1,H2,H3,H4,H5,H6,BLOCKQUOTE,PRE';
   function blockOf(node, root) {
     let n = node && node.nodeType === 3 ? node.parentNode : node;
     while (n && n !== root) { if (n.matches && n.matches(BLOCKS)) return n; n = n.parentNode; }
     return null;
+  }
+  /* The link a click landed in, and where it goes: the href, or null when the
+     click is not on a link or the link has nowhere real to go (safeHref leaves
+     "#" behind for a URL it refused). Walks up by hand so tiny-dom can run it. */
+  function linkOf(node, root) {
+    let n = node && node.nodeType === 3 ? node.parentNode : node;
+    while (n && n !== root) { if (n.tagName === 'A') return n; n = n.parentNode; }
+    return null;
+  }
+  function linkTarget(node, root) {
+    const a = linkOf(node, root);
+    const href = a && a.getAttribute('href');
+    return href && !href.startsWith('#') ? href : null;
   }
   // text from the start of the block up to the caret — what the input rules match on
   function textBefore(block, r) {
@@ -354,7 +371,7 @@ var NoteEditor = (function () {
 
     const hint = document.createElement('div');
     hint.className = 'md-hint';
-    hint.textContent = `“- ” bullet · “1. ” numbered · “[] ” to-do · Tab nests · ${CMD}B bold`;
+    hint.textContent = `“- ” bullet · “1. ” numbered · “[] ” to-do · Tab nests · ${CMD}B bold · ${MODCLICK} opens a link`;
 
     const el = document.createElement('div');
     el.className = 'md-editor';
@@ -507,9 +524,17 @@ var NoteEditor = (function () {
       touched();
     });
     doc.addEventListener('blur', flush);
-    // ticking a box is a change to the note: save the state the browser lands on
+    /* Links stay editable text: a plain click puts the caret in one, the way it
+       does in any editor. ⌘-click (Ctrl-click elsewhere) opens it in a new tab,
+       and the caret stays put — that click was about the page, not the note. */
+    const linkHit = e => (modClick(e) ? linkTarget(e.target, doc) : null);
+    doc.addEventListener('mousedown', e => { if (linkHit(e)) e.preventDefault(); });
+    doc.addEventListener('mouseover', e => { const a = linkOf(e.target, doc); if (a && !a.title) a.title = `${MODCLICK} to open`; });
     doc.addEventListener('click', e => {
-      if (e.target.tagName === 'INPUT' && e.target.type === 'checkbox') { touched(); flush(); }
+      // ticking a box is a change to the note: save the state the browser lands on
+      if (e.target.tagName === 'INPUT' && e.target.type === 'checkbox') { touched(); flush(); return; }
+      const href = linkHit(e);
+      if (href) { e.preventDefault(); window.open(href, '_blank', 'noopener'); }
     });
     doc.addEventListener('keydown', e => {
       const k = e.key;
@@ -661,7 +686,17 @@ var NoteEditor = (function () {
     };
   }
 
-  return { create, mdToHtml, htmlToMd, _t: { enter, indent: indentSrc, renumber, doc: doc_ } };
+  /* While the modifier is down, links show a pointer: the one moment a click
+     follows them. Tracked once for the page, not per editor, so nothing leaks
+     when the inspector swaps cards. */
+  if (typeof window !== 'undefined') {
+    const track = e => document.documentElement.classList.toggle('mod-held', modClick(e));
+    window.addEventListener('keydown', track);
+    window.addEventListener('keyup', track);
+    window.addEventListener('blur', () => document.documentElement.classList.remove('mod-held'));
+  }
+
+  return { create, mdToHtml, htmlToMd, _t: { enter, indent: indentSrc, renumber, doc: doc_, linkTarget } };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = NoteEditor;   // for the node-run unit tests
