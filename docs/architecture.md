@@ -25,6 +25,7 @@ permanently married to Claude Code.
 | `folio/runtime.py` | **the Claude-specific boundary**: `transition()` maps hook events to coarse states; everything downstream only sees `working / needs_you / ready / ended / inactive / unknown`. Another agent system would supply a different `transition()` and hook. |
 | `folio/transcript.py` | **also Claude-specific**: reads `aiTitle` / `lastPrompt` out of Claude Code's transcript so sessions have names. Purely additive — delete it and sessions fall back to their ids. |
 | `folio/hook.py`, `folio/hooks.py` | the observer entrypoint, and the settings.json merge/unmerge |
+| `folio/brief.py` | one card as a block of text for a prompt: name, notes, sessions, children, ancestors' notes. Pure formatting over the same snapshot the board renders. |
 | `folio/server.py` | JSON API + static files. `resume_command()` is a plain string on purpose; a richer resume mechanism can replace it without touching the Markdown. |
 | `folio/static/` | the whole UI: one HTML file, one CSS file, one JS file, one SVG favicon |
 

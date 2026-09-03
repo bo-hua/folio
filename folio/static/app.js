@@ -37,6 +37,8 @@ function h(tag, attrs = {}, ...kids) {
   return e;
 }
 const chevron = () => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 10 10'); s.innerHTML = '<path d="M3 1.5 6.5 5 3 8.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>'; return s; };
+const copyIcon = () => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 14 14'); s.setAttribute('aria-hidden', 'true'); s.innerHTML = '<rect x="4.75" y="4.75" width="7.5" height="7.5" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M9.25 4.75V3.2A1.45 1.45 0 0 0 7.8 1.75H3.2A1.45 1.45 0 0 0 1.75 3.2v4.6A1.45 1.45 0 0 0 3.2 9.25h1.55" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>'; return s; };
+const COPY_TIP = 'Copy for Claude — the card’s name, notes, sessions, children and parents as one block to paste into a prompt';
 const cardById = id => CARDS.find(c => c.id === id);
 const areaById = id => AREAS.find(a => a.id === id);
 const kidsOf = id => CARDS.filter(c => c.parent === id);
@@ -151,6 +153,36 @@ function toast(msg, undo, opts = {}) {
 function toastError(e) { toast((e && e.message) || String(e), null, { error: true }); }
 async function copyText(text) { try { await navigator.clipboard.writeText(text); toast('Copied to clipboard'); } catch (e) { window.prompt('Copy this command:', text); } }
 
+// ------------------------------------------------------------------ copy for Claude
+// One card as a block of text for a prompt: "work on this (<paste>)". The server writes
+// the block (it has the notes of every ancestor, which the canvas does not); the page only
+// puts it on the clipboard. When the browser refuses -- no permission, or the gesture has
+// expired by the time the fetch returns -- the text is shown selected, one ⌘C away.
+async function copyBrief(c) {
+  if (!c) return;
+  let text;
+  try { text = (await api('GET', `/api/items/${encodeURIComponent(c.id)}/brief`)).text; } catch (e) { toastError(e); return; }
+  try { await navigator.clipboard.writeText(text); toast(`Copied “${c.name}” for Claude — paste it into your prompt`); flashCard(c.id); }
+  catch (e) { showBriefToCopy(c, text); }
+}
+function showBriefToCopy(c, text) {
+  const prev = document.activeElement;
+  const src = h('textarea', { class: 'brief-src', readonly: true, spellcheck: 'false', 'aria-label': `Brief for ${c.name}` }); src.value = text;
+  const done = h('button', { class: 'cancel', type: 'button' }, 'Done');
+  const dlg = h('div', { class: 'dlg', role: 'dialog', 'aria-modal': 'true' },
+    h('h3', {}, `Copy “${c.name}” for Claude`),
+    h('p', { class: 'dlg-note' }, 'The browser would not write to the clipboard. The text below is selected — press ⌘C (Ctrl+C), then paste it into your prompt.'),
+    src, h('div', { class: 'dlg-acts' }, done));
+  const scrim = h('div', { class: 'scrim' }, dlg);
+  const close = () => { document.removeEventListener('keydown', onKey, true); scrim.remove(); if (prev && prev.focus) prev.focus(); };
+  const onKey = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } };
+  done.addEventListener('click', close);
+  scrim.addEventListener('pointerdown', e => { if (e.target === scrim) close(); });
+  document.addEventListener('keydown', onKey, true);
+  document.body.appendChild(scrim);
+  requestAnimationFrame(() => { scrim.classList.add('show'); src.focus(); src.select(); });
+}
+
 // ------------------------------------------------------------------ derived
 function attn(id) {
   let needs = 0, working = 0, ownNeeds = 0, ownWorking = 0;
@@ -197,6 +229,7 @@ function cardEl(c, depth = 0) {
   const hiddenNote = hiddenKids ? ` · ${hiddenKids} hidden by the filter` : '';
   if (kids.length) head.appendChild(h('button', { class: 'tog', 'data-act': 'toggle', title: (isCollapsed ? `Show ${descendantCount(c.id, true)} inside` : 'Collapse this card') + hiddenNote }, String(kids.length), chevron()));
   else if (hiddenKids) head.appendChild(h('span', { class: 'tog hid', title: `${hiddenKids} card${hiddenKids === 1 ? '' : 's'} inside — hidden by the filter` }, `${hiddenKids} hidden`));
+  head.appendChild(h('button', { class: 'card-copy', 'data-act': 'copy-brief', title: COPY_TIP, 'aria-label': `Copy “${c.name}” for Claude` }, copyIcon()));
   el.appendChild(head);
   if (sess.length) {
     const row = h('div', { class: 'card-row' });
@@ -305,7 +338,9 @@ function renderInspector() {
   const lc = lifecycle(c), kids = kidsOf(c.id), sess = sessOf(c.id), ag = attn(c.id), area = areaOf(c.id);
   const path = h('div', { class: 'ins-path' }, h('b', {}, area ? area.name : c.area));
   ancestors(c.id).forEach(pid => { path.append(h('span', { class: 'crumb-sep' }, '›'), h('button', { class: 'crumb', style: 'padding:0 2px', 'data-act': 'reveal', 'data-id': pid }, cardById(pid).name)); });
-  if (c.parent) path.appendChild(h('button', { class: 'mini', 'data-act': 'move-out', title: 'Make it a sibling of its parent' }, '↑ Move out'));
+  const acts = h('span', { class: 'ins-acts' }, h('button', { class: 'mini ico', 'data-act': 'copy-brief', title: COPY_TIP }, copyIcon(), 'Copy for Claude'));
+  if (c.parent) acts.appendChild(h('button', { class: 'mini', 'data-act': 'move-out', title: 'Make it a sibling of its parent' }, '↑ Move out'));
+  path.appendChild(acts);
   const title = h('textarea', { value: c.name, rows: 1, 'data-act': 'rename', 'aria-label': 'Card name', oninput: e => fitTitle(e.target) });
   ins.appendChild(h('div', { class: 'ins-head' }, path, h('div', { class: 'ins-title' }, h('i', { class: `glyph ${lc}` }), title),
     h('button', { class: 'ins-close', 'data-act': 'close', title: 'Close (Esc)' }, '×')));
@@ -535,7 +570,7 @@ stage.addEventListener('pointerup', e => {
   else if (t.kind === 'area') { const a = areaById(t.id), wasNested = !!c.parent; moveCard(c, { parent: null, area: a.id }, wasNested ? `Moved “${c.name}” out to ${a.name} — it’s top-level now` : `Moved “${c.name}” to ${a.name}`); }
 });
 stage.addEventListener('pointercancel', e => { if (sdrag) endSessDrag(e); if (ptr && ptr.mode === 'card') endCardDrag(ptr); ptr = null; stage.classList.remove('panning'); });
-stage.addEventListener('dblclick', e => { const card = e.target.closest('.card'); if (card && kidsOf(card.dataset.id).length) toggleCollapse(card.dataset.id); });
+stage.addEventListener('dblclick', e => { if (e.target.closest('button')) return; const card = e.target.closest('.card'); if (card && kidsOf(card.dataset.id).length) toggleCollapse(card.dataset.id); });
 stage.addEventListener('wheel', e => {
   // the inspector sits inside the stage, so its wheel events bubble here. It scrolls itself.
   if (e.target.closest('.inspector')) return;
@@ -682,10 +717,12 @@ stage.addEventListener('click', e => {
   if (a === 'toggle') toggleCollapse(act.closest('.card').dataset.id);
   if (a === 'add-to-area') newCard({ area: act.closest('.area').dataset.area });
   if (a === 'area-menu') openAreaMenu(act, areaById(act.closest('.area').dataset.area));
+  if (a === 'copy-brief') copyBrief(cardById(act.closest('.card').dataset.id));
 });
 $('#inspector').addEventListener('click', e => {
   const act = e.target.closest('[data-act]'); if (!act) return; const a = act.dataset.act, c = cardById(state.selected); if (!c) return;
   if (a === 'close') select(null);
+  if (a === 'copy-brief') copyBrief(c);
   if (a === 'toggle-done') setStatus(c, c.human === 'done' ? 'open' : 'done');
   if (a === 'toggle-park') setStatus(c, c.human === 'parked' ? 'open' : 'parked');
   if (a === 'detach') { const s = sessById(act.dataset.sid); if (s) detachSession(s); }
@@ -752,6 +789,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'h' || e.key === 'H') setFocus(FOCUS_ORDER[(FOCUS_ORDER.indexOf(state.focus) + 1) % FOCUS_ORDER.length]);
   if (e.key === 'f' || e.key === 'F') $('#zoomFit').click();
   if (e.key === 'n' || e.key === 'N') $('#newIdeaBtn').click();
+  if ((e.key === 'c' || e.key === 'C') && !e.metaKey && !e.ctrlKey && !e.altKey) { if (state.selected) copyBrief(cardById(state.selected)); else hint('Open a card first, then press C to copy it for Claude'); }
   if (e.key === '=' || e.key === '+') $('#zoomIn').click();
   if (e.key === '-') $('#zoomOut').click();
 });

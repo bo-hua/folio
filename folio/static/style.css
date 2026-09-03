@@ -207,6 +207,12 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .comp .c-idea{background:var(--line-2)}
 .comp .c-done{background:var(--muted)}
 .comp .c-parked{background:repeating-linear-gradient(90deg,var(--faint) 0 3px,transparent 3px 5px)}
+/* copy for Claude: one quiet button per card, shown when the title row is hovered or the card is open.
+   Revealing on the head rather than the whole card keeps a nested card's hover from lighting up its parent's too */
+.card-copy{flex:none;width:20px;height:20px;margin:-2px -4px -2px 0;border-radius:6px;color:var(--faint);display:grid;place-items:center;opacity:0;transition:opacity .15s,background .15s,color .15s}
+.card-copy svg{width:13px;height:13px}
+.card-head:hover .card-copy,.card.selected>.card-head .card-copy,.card-copy:focus-visible{opacity:1}
+.card-copy:hover{background:var(--raised);color:var(--ink)}
 /* while a session is being dragged, cards that would start from it are outlined — no reflow, nothing moves under the pointer */
 .stage.sess-drag .card.idea{outline:1px dashed var(--line-2);outline-offset:2px}
 /* children live inside the parent, along a tree rail; height animates so neighbours slide rather than jump */
@@ -240,7 +246,7 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .ins-head{padding:16px 18px 12px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:8px}
 .ins-path{font-size:11.5px;color:var(--muted);display:flex;gap:4px;align-items:center;flex-wrap:wrap}
 .ins-path b{font-weight:500;color:var(--ink-2)}
-.ins-path .mini{margin-left:auto}
+.ins-path .ins-acts{margin-left:auto;display:flex;gap:4px}
 .ins-title{display:flex;gap:9px;align-items:flex-start}
 .ins-title .glyph{margin-top:7px;transform:scale(1.2)}
 /* one family for the whole UI — the title earns its rank from size and weight, not a different typeface */
@@ -277,6 +283,8 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .mini{padding:3px 8px;border-radius:6px;border:1px solid var(--line);font-size:11px;color:var(--ink-2);background:var(--surface)}
 .mini:hover{background:var(--raised);border-color:var(--line-2)}
 .mini.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.mini.ico{display:inline-flex;align-items:center;gap:5px}
+.mini.ico svg{width:11px;height:11px}
 .ins-kid{display:flex;align-items:center;gap:8px;padding:6px 6px;margin:0 -6px;border-radius:7px;font-size:12.5px;color:var(--ink)}
 .ins-kid:hover{background:var(--raised)}
 .ins-hidden{display:block;width:100%;margin-top:6px;padding:5px 8px;border:1px dashed var(--line-2);border-radius:7px;font-size:11.5px;color:var(--muted);text-align:center;transition:color .15s,border-color .15s}
@@ -371,6 +379,8 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .dlg-type b{color:var(--ink);font-weight:600}
 .dlg input{width:100%;border:1px solid var(--line-2);border-radius:8px;padding:8px 10px;font-size:13px;background:var(--raised);color:var(--ink)}
 .dlg input::placeholder{color:var(--faint)}
+.brief-src{width:100%;min-height:220px;max-height:55vh;resize:vertical;border:1px solid var(--line-2);border-radius:8px;padding:9px 11px;background:var(--raised);color:var(--ink);font-family:var(--mono);font-size:11px;line-height:1.5;white-space:pre;overflow:auto}
+.brief-src:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow)}
 .dlg input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow);background:var(--surface)}
 .dlg-acts{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
 .dlg-acts button{padding:7px 13px;border-radius:8px;font-size:12.5px;font-weight:500}
