@@ -92,6 +92,19 @@ trip('a rule survives', 'above\n\n---\n\nbelow');
 trip('an escaped dash stays escaped', '\\- not a list');
 trip('running it twice changes nothing more', roundTrip('- a\n    - b\n\ntext'), '- a\n    - b\n\ntext');
 
+// ---------------------------------------------------------------- following a link
+// Inside an editor a click on a link places the caret; a modifier-click opens it.
+// Where it goes is decided here, from the node the click landed on.
+const find = (n, tag) => { if (n.tagName === tag) return n; for (const c of n.childNodes) { const f = c.nodeType === 1 && find(c, tag); if (f) return f; } return null; };
+const linked = parseHtml(E.mdToHtml('see [folio](https://ex.com/a?b=1) and **more**'));
+is('a click on a link opens its url', T.linkTarget(find(linked, 'A'), linked), 'https://ex.com/a?b=1');
+is('a click on the text inside the link counts too', T.linkTarget(find(linked, 'A').childNodes[0], linked), 'https://ex.com/a?b=1');
+is('a click beside the link opens nothing', T.linkTarget(find(linked, 'STRONG'), linked), null);
+const bare = parseHtml(E.mdToHtml('- see https://ex.com/pr/12'));
+is('a bare url typed into a bullet opens too', T.linkTarget(find(bare, 'A').childNodes[0], bare), 'https://ex.com/pr/12');
+const defanged = parseHtml(E.mdToHtml('[x](javascript:alert(1))'));
+is('a defanged link has nowhere to go', T.linkTarget(find(defanged, 'A'), defanged), null);
+
 // ---------------------------------------------------------------- the Markdown tab's helpers
 const parse = s => { const i = s.indexOf('|'); return T.doc(s.slice(0, i) + s.slice(i + 1), i, i); };
 const show = d => d.text.slice(0, d.start) + '|' + d.text.slice(d.start);

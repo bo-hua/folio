@@ -115,8 +115,8 @@ and the app lays it out.
   space to promote it. Attention glows amber and bubbles up; **J** walks you
   through it. Scroll pans, ⌘/ctrl-scroll zooms, **F** fits.
 - **Inspector (right)** — rename, mark done or park, attached sessions with
-  **Open / Resume**, children, notes, context links, delete (cascades after a
-  confirm).
+  **Open / Resume**, children, notes (⌘-click a link in them to open it), context
+  links, delete (cascades after a confirm).
 - **Copy for Claude** — the copy button on a card (or **C** with a card open) puts
   the whole card on the clipboard as one block: name, id and file, notes, links,
   attached sessions with branch and last prompt, children, and the notes of every
