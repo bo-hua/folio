@@ -8,10 +8,15 @@ const POLL_MS = 4000;
 // The three canvas modes. `keep` is what earns a card its place on its own merit;
 // a card also stays when something inside it stays, and while it is the one you have open.
 const LIVE_STATES = new Set(['needs_you', 'working', 'ready']); // same boundary as runtime.is_live()
+// Focus is what you are working on with Claude: an open card with a session attached -- ended or
+// inactive still counts, the card is yours -- plus anything a session is live on right now, even
+// a done card. A card nobody opened a session on, or finished work whose sessions have all gone
+// quiet, drops out.
+const closedOut = c => lifecycle(c) === 'done' || lifecycle(c) === 'parked';
 const FOCUS_MODES = {
   all: { label: 'Showing everything' },
   done: { label: 'Hiding done cards', keep: c => lifecycle(c) !== 'done' },
-  live: { label: 'Only cards with a live session', keep: c => sessOf(c.id).some(s => LIVE_STATES.has(s.state)) },
+  live: { label: 'Only cards with a session', keep: c => { const ss = sessOf(c.id); return ss.some(s => LIVE_STATES.has(s.state)) || (ss.length > 0 && !closedOut(c)); } },
 };
 const FOCUS_ORDER = ['all', 'done', 'live'];
 

@@ -122,9 +122,10 @@ and the app lays it out.
   attached sessions with branch and last prompt, children, and the notes of every
   card above it. Type *work on this feature* in Claude Code and paste.
 
-**H** cycles the focus filter: *All → Hide done → Focus* (only cards with a live
-session). Hiding is by subtree, and a card whose session needs you is never hidden
-— a filter that swallows an alert is worse than no filter.
+**H** cycles the focus filter: *All → Hide done → Focus* (only cards with a Claude
+session attached: open cards with any session, ended or not, plus whatever a session
+is live on right now). Hiding is by subtree, and a card whose session needs you is
+never hidden — a filter that swallows an alert is worse than no filter.
 
 Deep links are `/#card=<id>`; collapsed subtrees, the camera and the filter are
 remembered per browser.
