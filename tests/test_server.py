@@ -367,3 +367,61 @@ def test_the_placeholder_gets_out_of_the_way(server):
     blank = next(l for l in js.splitlines() if "const blank = ()" in l)
     for tag in ("ul", "ol", "blockquote", "input"):
         assert tag in blank
+
+
+def test_brief_packs_the_card_and_its_surroundings_for_a_prompt(server):
+    """GET /api/items/<id>/brief is what the card's copy button puts on the clipboard:
+    the card, its notes and links, its sessions (branch, cwd), its children, and the
+    notes of the cards above it -- one block to paste after "work on this"."""
+    call, cfg, repo = server["call"], server["config"], server["repo"]
+    assert call("POST", "/api/areas", {"name": "Ranking"})[0] == 200
+    _, root = call("POST", "/api/items", {"name": "Better ranking", "area": "Ranking", "notes": "the goal: a longer-term objective"})
+    _, mid = call("POST", "/api/items", {"name": "Bigger features", "parent": root["id"]})
+    _, leaf = call("POST", "/api/items", {"name": "Prototype", "parent": mid["id"], "notes": "- try the discounted variant",
+                                          "context": [{"title": "Design doc", "ref": "https://example.com/doc"}]})
+    _, kid = call("POST", "/api/items", {"name": "Eval harness", "parent": leaf["id"]})
+    now = datetime.now(timezone.utc)
+    RuntimeStore(cfg.runtime_dir).record_event({"session_id": "s-proto", "hook_event_name": "PreToolUse", "tool_name": "Read", "cwd": str(repo["worktree"] / "src")}, now=now)
+    assert call("POST", f"/api/items/{leaf['id']}/sessions", {"session_id": "s-proto", "title": "Prototype run"})[0] == 200
+
+    status, res = call("GET", f"/api/items/{leaf['id']}/brief")
+    assert status == 200 and res["id"] == leaf["id"] and res["name"] == "Prototype"
+    text = res["text"]
+    lines = text.splitlines()
+    assert lines[0] == "folio card “Prototype”"
+    assert lines[1] == f"id: {leaf['id']} · status: active · in: Ranking › Better ranking › Bigger features"
+    assert lines[2].startswith("file: ") and lines[2].endswith("/items/Ranking/Prototype.md")
+    assert "## Notes\n- try the discounted variant\n" in text
+    assert "## Context\n- Design doc: https://example.com/doc\n" in text
+    assert "## Sessions\n- “Prototype run” (s-proto) — working · branch feature · " in text
+    assert "## Children\n- Eval harness — idea\n" in text
+    # the direct parent has nothing to say beyond its name (already in the `in:` line); the root's notes come along
+    assert "## Parent: Bigger features" not in text
+    assert "## Parent of “Bigger features”: Better ranking (active)\nthe goal: a longer-term objective" in text
+    assert text[0] not in "#/!"  # pasted alone into Claude Code, those would be a memory note / slash / shell command
+
+    assert call("GET", "/api/items/nope/brief")[0] == 404
+    assert call("POST", f"/api/items/{leaf['id']}/brief", {})[0] == 405
+
+
+def test_the_copy_button_is_on_every_card_and_in_the_inspector(server):
+    """The page must actually carry the button, the shortcut, and the styles behind them."""
+    with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
+        assert res.status == 200
+        js = res.read().decode()
+    assert js.count("'data-act': 'copy-brief'") == 2, "one button per card on the canvas, one in the inspector"
+    assert "/brief`" in js and "navigator.clipboard.writeText(text)" in js
+    card = js.split("function cardEl(c, depth = 0) {", 1)[1].split("\nfunction ", 1)[0]
+    assert "class: 'card-copy'" in card and "copy-brief" in card
+    assert "function showBriefToCopy(" in js  # the clipboard can refuse; the text is shown instead
+    keys = js.split("document.addEventListener('keydown', e => {", 1)[1].split("});", 1)[0]
+    assert "e.key === 'c'" in keys and "!e.metaKey && !e.ctrlKey" in keys, "C copies; ⌘C stays the browser's"
+    with urllib.request.urlopen(server["url"] + "/static/style.css", timeout=10) as res:
+        assert res.status == 200 and res.headers["Content-Type"].startswith("text/css")
+        css = res.read().decode()
+    for sel in (".card-copy{", ".brief-src{", ".ins-path .ins-acts{"):
+        assert any(l.startswith(sel) for l in css.splitlines()), sel
+    reveal = next(l for l in css.splitlines() if l.startswith(".card-head:hover .card-copy"))
+    assert ".card.selected>.card-head .card-copy" in reveal  # the open card keeps its button visible
+    with urllib.request.urlopen(server["url"] + "/", timeout=10) as res:
+        assert b"<kbd>C</kbd> copy" in res.read()

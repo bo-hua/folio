@@ -12,6 +12,7 @@ Everything is served from the loopback bind address (`127.0.0.1:4317` by default
 | POST | `/api/items` | create an item |
 | GET, PATCH, DELETE | `/api/items/<id>` | read / update / delete an item |
 | POST | `/api/items/<id>/move` | the canvas's one structural edit: parent / area / before / after |
+| GET | `/api/items/<id>/brief` | the card as one block of text to paste into a Claude prompt (what the copy button copies) |
 | POST | `/api/items/<id>/sessions` | attach a session |
 | PATCH, DELETE | `/api/items/<id>/sessions/<sid>` | retitle / detach a session |
 | GET | `/api/sessions[?all=1]` | sessions the hook has observed |
@@ -23,10 +24,15 @@ Notes:
 - `DELETE /api/items/<id>` cascades to everything nested under it.
 - Attaching a session detaches it from any other item unless `exclusive: false` —
   a session lives on exactly one card.
+- `GET /api/items/<id>/brief` returns `{id, name, text}`. `text` is the card's name,
+  id and file, its notes, links, attached sessions (state, branch, cwd, last
+  prompt), children, and the notes of every card above it. It never starts with
+  `#`, `/` or `!`, so it is safe to paste into Claude Code on its own.
 
 Example:
 
 ```bash
 curl -s http://127.0.0.1:4317/api/overview | jq '.areas[].name'
 curl -s http://127.0.0.1:4317/api/sessions | jq '.[] | {short_id, state, title}'
+curl -s http://127.0.0.1:4317/api/items/k7m2p9xw/brief | jq -r .text | pbcopy   # same as the card's copy button
 ```

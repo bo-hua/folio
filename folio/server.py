@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import markdown as md
 
 from . import __version__
+from .brief import render_brief
 from .config import Config
 from .gitinfo import Worktree, match_cwd, repo_snapshot
 from .items import HUMAN_STATUSES, STATUSES, Item, ItemStore
@@ -325,6 +326,23 @@ class App:
         )
         return detail
 
+    def brief(self, item_id: str) -> dict:
+        """The card as one block of text to paste into a Claude prompt.
+
+        Name, id and file, notes, links, attached sessions (with branch, cwd and
+        last prompt), children, and the notes of every card above it -- so "work on
+        this (…)" carries the context a person would otherwise re-type.
+        """
+        snap = self.snapshot()
+        item = snap.by_id.get(item_id)
+        if item is None:
+            raise ApiError(404, "item not found")
+        summaries = {i.id: self.item_summary(i, snap) for i in snap.items}
+        self.annotate_lifecycles(summaries)
+        lifecycles = {iid: s["lifecycle"] for iid, s in summaries.items()}
+        text = render_brief(item, snap.items, summaries[item.id]["sessions"], lifecycles)
+        return {"id": item.id, "name": item.name, "text": text}
+
     def recent_sessions(self, include_all: bool = False, limit: int = 50) -> dict:
         snap = self.snapshot()
         attached: dict[str, list[dict]] = {}
@@ -508,6 +526,7 @@ class App:
         ("GET", r"^/api/items/([^/]+)$", "item_detail"),
         ("PATCH", r"^/api/items/([^/]+)$", "update_item"),
         ("DELETE", r"^/api/items/([^/]+)$", "delete_item"),
+        ("GET", r"^/api/items/([^/]+)/brief$", "brief"),
         ("POST", r"^/api/items/([^/]+)/move$", "move_item"),
         ("POST", r"^/api/items/([^/]+)/sessions$", "attach_session"),
         ("PATCH", r"^/api/items/([^/]+)/sessions/([^/]+)$", "update_session"),

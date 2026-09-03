@@ -117,6 +117,10 @@ and the app lays it out.
 - **Inspector (right)** — rename, mark done or park, attached sessions with
   **Open / Resume**, children, notes, context links, delete (cascades after a
   confirm).
+- **Copy for Claude** — the copy button on a card (or **C** with a card open) puts
+  the whole card on the clipboard as one block: name, id and file, notes, links,
+  attached sessions with branch and last prompt, children, and the notes of every
+  card above it. Type *work on this feature* in Claude Code and paste.
 
 **H** cycles the focus filter: *All → Hide done → Focus* (only cards with a live
 session). Hiding is by subtree, and a card whose session needs you is never hidden
