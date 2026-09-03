@@ -116,29 +116,39 @@ def test_a_deep_survivor_pulls_its_whole_chain_through(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# "Focus" -- what a Claude session is live on right now, whatever the lifecycle
+# "Focus" -- what you are working on with Claude: open cards with a session
+# attached, whatever its state, plus anything a session is live on right now
 # --------------------------------------------------------------------------- #
 
 @node
-def test_focus_keeps_only_cards_carrying_a_live_session(tmp_path):
+def test_focus_keeps_only_cards_carrying_a_session(tmp_path):
     got = run(tmp_path, TREE, "live", sessions=[{"id": "s1", "item": "b1", "state": "working"}])
     # b1 is being worked on; b is the way in to it. Everything else -- including the
-    # active card `a` and the untouched idea `a2` -- has no live session and drops out.
+    # active card `a` and the untouched idea `a2` -- has no session and drops out.
     assert got["visible"] == ["b", "b1"] and got["hidden"] == 6
 
 
 @node
-def test_focus_reads_live_the_way_the_rail_does(tmp_path):
-    for live in ("working", "needs_you", "ready"):
-        got = run(tmp_path, TREE, "live", sessions=[{"id": "s1", "item": "a", "state": live}])
-        assert got["visible"] == ["a"], live
-    for dead in ("ended", "inactive", "unknown"):
-        got = run(tmp_path, TREE, "live", sessions=[{"id": "s1", "item": "a", "state": dead}])
-        assert got["visible"] == [], dead
+def test_an_open_card_stays_after_its_session_goes_quiet(tmp_path):
+    # You attached a session to `a` and came back the next day. The session shows as
+    # ended or inactive, but the card is still yours -- Focus keeps it whatever the state.
+    for st in ("working", "needs_you", "ready", "ended", "inactive", "unknown"):
+        got = run(tmp_path, TREE, "live", sessions=[{"id": "s1", "item": "a", "state": st}])
+        assert got["visible"] == ["a"], st
 
 
 @node
-def test_focus_does_not_care_what_lifecycle_you_gave_the_card(tmp_path):
+def test_finished_work_with_only_quiet_sessions_drops_out(tmp_path):
+    # c1 is done and its session ended: finished work, not focus. d is parked: you set
+    # it aside on purpose. Neither earns a place on a session nobody is running.
+    for card in ("c1", "d"):
+        for dead in ("ended", "inactive", "unknown"):
+            got = run(tmp_path, TREE, "live", sessions=[{"id": "s1", "item": card, "state": dead}])
+            assert got["visible"] == [], (card, dead)
+
+
+@node
+def test_a_live_session_keeps_a_card_whatever_lifecycle_you_gave_it(tmp_path):
     # a done card and a parked card, each with something running on it, both stay
     got = run(tmp_path, TREE, "live", sessions=[
         {"id": "s1", "item": "c1", "state": "working"},
@@ -148,7 +158,7 @@ def test_focus_does_not_care_what_lifecycle_you_gave_the_card(tmp_path):
 
 
 @node
-def test_focus_on_a_quiet_workspace_hides_everything(tmp_path):
+def test_focus_on_a_workspace_with_no_sessions_hides_everything(tmp_path):
     got = run(tmp_path, TREE, "live")
     assert got["visible"] == [] and got["hidden"] == len(TREE)
 
@@ -209,8 +219,9 @@ def test_a_session_asking_for_you_survives_every_filter(tmp_path):
 
 
 @node
-def test_focus_leaves_only_the_rows_on_live_cards(tmp_path):
+def test_focus_leaves_only_the_rows_on_cards_it_keeps(tmp_path):
     got = run(tmp_path, TREE, "live", sessions=RAIL)
+    # a1 and c are done with ended sessions, so they and their rows go; b1 is open work
     assert got["rail"] == ["s-b1", "s-free"]
 
 
