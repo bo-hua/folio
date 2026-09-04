@@ -130,6 +130,32 @@ curl -s -X PATCH -H 'Content-Type: application/json' -d '{"status":"done"}' \
 
 Read back `human_status: done` in the reply before reporting it.
 
+**Recording the commit on the card.** Whenever I create a commit and push it
+— the close-out merge, or a branch push at the end of a job — and this session
+is linked to a folio card, I append the GitHub link of that commit to the end
+of the card's note, one link per line, for the record:
+
+```
+https://github.com/bo-hua/folio/commit/a98808a78c7d1d9994ae7e8fc64ec39e5c801acf
+```
+
+Use the full 40-character sha (`git rev-parse HEAD`), not an abbreviation.
+`PATCH` with `notes` replaces the whole Notes section, so read first, append,
+then write back:
+
+```bash
+curl -s http://127.0.0.1:4317/api/items/<id> \
+  | .venv/bin/python -c "import json,sys; print(json.load(sys.stdin)['notes'])"
+# append the link as a new final line, then:
+curl -s -X PATCH -H 'Content-Type: application/json' \
+  -d '{"notes": "<existing notes>\nhttps://github.com/bo-hua/folio/commit/<full sha>"}' \
+  http://127.0.0.1:4317/api/items/<id>
+```
+
+Read back `notes` in the reply and confirm the link is there and nothing above
+it was lost. For a merge, record the merge commit on `main`; if the merge was a
+fast-forward, record the branch tip that `main` now points at.
+
 **Other sessions' worktrees are not yours to delete.** Before removing anything
 under `.claude/worktrees/`, check all three: is it `locked` in
 `git worktree list`, is its branch merged into `main`, and does anything have a
