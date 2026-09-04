@@ -303,6 +303,7 @@ function cardEl(c, depth = 0) {
   if (kids.length) head.appendChild(h('button', { class: 'tog', 'data-act': 'toggle', title: (isCollapsed ? `Show ${descendantCount(c.id, true)} inside` : 'Collapse this card') + hiddenNote }, String(kids.length), chevron()));
   else if (hiddenKids) head.appendChild(h('span', { class: 'tog hid', title: `${hiddenKids} card${hiddenKids === 1 ? '' : 's'} inside — hidden by the filter` }, `${hiddenKids} hidden`));
   head.appendChild(h('button', { class: 'card-copy', 'data-act': 'copy-brief', title: COPY_TIP, 'aria-label': `Copy “${c.name}” for Claude` }, copyIcon()));
+  head.appendChild(h('button', { class: 'card-add', 'data-act': 'add-child', title: `New idea inside “${c.name}”`, 'aria-label': `New idea inside “${c.name}”` }, '+'));
   el.appendChild(head);
   if (sess.length) {
     const row = h('div', { class: 'card-row' });
@@ -450,11 +451,22 @@ function renderRail() {
     h('i', { class: 'dot spare' }), `${spares} spare session${spares === 1 ? '' : 's'} standing by for the next job`));
 }
 function fitTitle(el) { if (!el.isConnected) return; el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
+// The title textarea while it is being typed in, if it belongs to this card: the text so far and where
+// the caret is. renderInspector rebuilds the panel from scratch, and a redraw can land mid-word -- the
+// detail read arrives a few ms after a new card is selected and its title focused, and until this the
+// fresh textarea took the place of the focused one, dropping the focus and anything typed. That is why
+// "type the title right away" did not work: the caret was there, then gone.
+function titleUnderEdit(ins, id) {
+  const t = ins.querySelector('.ins-title textarea');
+  return t && document.activeElement === t && ins.dataset.card === id ? { value: t.value, start: t.selectionStart, end: t.selectionEnd, dir: t.selectionDirection } : null;
+}
+function restoreTitleEdit(t, keep) { t.value = keep.value; fitTitle(t); t.focus({ preventScroll: true }); t.setSelectionRange(keep.start, keep.end, keep.dir); }
 function renderInspector() {
   const ins = $('#inspector'); const c = state.selected && cardById(state.selected);
-  if (!c) { ins.classList.remove('open'); return; }
+  if (!c) { ins.classList.remove('open'); ins.dataset.card = ''; return; }
   const d = state.detail && state.detail.id === c.id ? state.detail : null;
-  ins.classList.add('open'); ins.innerHTML = '';
+  const typing = titleUnderEdit(ins, c.id);
+  ins.classList.add('open'); ins.innerHTML = ''; ins.dataset.card = c.id;
   const lc = lifecycle(c), kids = kidsOf(c.id), sess = sessOf(c.id), ag = attn(c.id), area = areaOf(c.id);
   const path = h('div', { class: 'ins-path' }, h('b', {}, area ? area.name : c.area));
   ancestors(c.id).forEach(pid => { path.append(h('span', { class: 'crumb-sep' }, '›'), h('button', { class: 'crumb', style: 'padding:0 2px', 'data-act': 'reveal', 'data-id': pid }, cardById(pid).name)); });
@@ -465,6 +477,7 @@ function renderInspector() {
   ins.appendChild(h('div', { class: 'ins-head' }, path, h('div', { class: 'ins-title' }, h('i', { class: `glyph ${lc}` }), title),
     h('button', { class: 'ins-close', 'data-act': 'close', title: 'Close (Esc)' }, '×')));
   fitTitle(title); document.fonts.ready.then(() => fitTitle(title));
+  if (typing) restoreTitleEdit(title, typing);
   const body = h('div', { class: 'ins-body' });
   // state
   const st = h('div', { class: 'sec' }, h('h3', {}, 'State'),
@@ -630,6 +643,8 @@ async function newCard(spec) {
     const it = await api('POST', '/api/items', { name: 'Untitled idea', ...spec });
     if (spec.parent) collapsed.delete(spec.parent);
     await load(); render(); select(it.id); ensureVisible(cardRect(it.id)); flashCard(it.id);
+    // straight into the title, placeholder selected, so the first keystroke replaces it. select() also
+    // started the detail read; when it lands, renderInspector carries this focus over (see titleUnderEdit).
     requestAnimationFrame(() => { const i = $('.ins-title textarea'); if (i) { i.focus({ preventScroll: true }); i.select(); } });
   } catch (e) { toastError(e); }
 }
@@ -846,6 +861,7 @@ stage.addEventListener('click', e => {
   if (a === 'toggle') toggleCollapse(act.closest('.card').dataset.id);
   if (a === 'fold') toggleFold(act.closest('.card').dataset.id);
   if (a === 'add-to-area') newCard({ area: act.closest('.area').dataset.area });
+  if (a === 'add-child') newCard({ parent: act.closest('.card').dataset.id });
   if (a === 'area-menu') openAreaMenu(act, areaById(act.closest('.area').dataset.area));
   if (a === 'copy-brief') copyBrief(cardById(act.closest('.card').dataset.id));
 });

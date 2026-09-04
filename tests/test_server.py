@@ -441,6 +441,43 @@ def test_the_copy_button_is_on_every_card_and_in_the_inspector(server):
         assert b"<kbd>C</kbd> copy" in res.read()
 
 
+def test_a_card_has_a_plus_that_makes_a_child_and_lands_in_its_title(server):
+    """Making a child meant opening the parent and typing into a form at the foot of the
+    inspector. Each card now carries a + at the right end of its title row, beside the copy
+    button, and both it and an Area's + leave the new card open with its title focused and the
+    placeholder selected. The detail read that follows a selection rebuilds the inspector, and
+    used to drop that focus -- the redraw must carry a title under edit over."""
+    with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
+        assert res.status == 200 and res.headers["Content-Type"].startswith(("application/javascript", "text/javascript"))
+        js = res.read().decode()
+    card = js.split("function cardEl(c, depth = 0) {", 1)[1].split("\nfunction ", 1)[0]
+    assert "'data-act': 'add-child'" in card
+    assert card.index("'data-act': 'copy-brief'") < card.index("'data-act': 'add-child'")  # the + is the rightmost thing in the row
+    clicks = js.split("stage.addEventListener('click'", 1)[1].split("\n});", 1)[0]  # the whole handler, to its own closing line
+    assert "a === 'add-child'" in clicks and "newCard({ parent: act.closest('.card').dataset.id })" in clicks
+    assert "a === 'add-to-area'" in clicks and "newCard({ area:" in clicks  # the Area's + takes the same path, so it gets the same landing
+    new_card = js.split("async function newCard(spec) {", 1)[1].split("\n}", 1)[0]
+    assert "select(it.id)" in new_card and "i.focus(" in new_card and "i.select()" in new_card
+    ins = js.split("function renderInspector() {", 1)[1].split("\n// ----", 1)[0]
+    assert "const typing = titleUnderEdit(ins, c.id);" in ins and "if (typing) restoreTitleEdit(title, typing);" in ins
+    assert "ins.dataset.card = c.id" in ins  # so an edit is only carried to the same card, never onto the next one selected
+    with urllib.request.urlopen(server["url"] + "/static/style.css", timeout=10) as res:
+        assert res.status == 200 and res.headers["Content-Type"].startswith("text/css")
+        css = res.read().decode()
+    assert any(l.startswith(".card-add{") for l in css.splitlines())
+    assert any(".card.selected>.card-head .card-add" in l and "opacity:1" in l for l in css.splitlines())
+    # and the server side of the click: a child needs only a parent, and lands in the parent's Area
+    call = server["call"]
+    st, _ = call("POST", "/api/areas", {"name": "Plus"})
+    assert st == 200
+    st, parent = call("POST", "/api/items", {"name": "Parent", "area": "Plus"})
+    assert st == 201
+    st, kid = call("POST", "/api/items", {"name": "Untitled idea", "parent": parent["id"]})
+    assert st == 201 and kid["parent"] == parent["id"] and kid["area"] == "Plus"
+    st, renamed = call("PATCH", f"/api/items/{kid['id']}", {"name": "Typed right away"})
+    assert st == 200 and renamed["name"] == "Typed right away"
+
+
 def test_a_long_list_folds_its_done_children_into_one_line(server):
     """A parent with a dozen done children was a column taller than the rest of the
     canvas. The page must carry the fold: the rule, the line on the card, the click

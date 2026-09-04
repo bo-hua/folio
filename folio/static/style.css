@@ -218,12 +218,14 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .comp .c-idea{background:var(--line-2)}
 .comp .c-done{background:var(--muted)}
 .comp .c-parked{background:repeating-linear-gradient(90deg,var(--faint) 0 3px,transparent 3px 5px)}
-/* copy for Claude: one quiet button per card, shown when the title row is hovered or the card is open.
-   Revealing on the head rather than the whole card keeps a nested card's hover from lighting up its parent's too */
-.card-copy{flex:none;width:20px;height:20px;margin:-2px -4px -2px 0;border-radius:6px;color:var(--faint);display:grid;place-items:center;opacity:0;transition:opacity .15s,background .15s,color .15s}
+/* copy for Claude, and + for a child: two quiet buttons per card at the right end of the title row, shown when
+   the row is hovered or the card is open. Revealing on the head rather than the whole card keeps a nested card's
+   hover from lighting up its parent's too. The + is the corner one, so it is where the Area's + is: top right */
+.card-copy{flex:none;width:20px;height:20px;margin:-2px 0;border-radius:6px;color:var(--faint);display:grid;place-items:center;opacity:0;transition:opacity .15s,background .15s,color .15s}
 .card-copy svg{width:13px;height:13px}
-.card-head:hover .card-copy,.card.selected>.card-head .card-copy,.card-copy:focus-visible{opacity:1}
-.card-copy:hover{background:var(--raised);color:var(--ink)}
+.card-add{flex:none;width:20px;height:20px;margin:-2px -4px -2px -5px;border-radius:6px;color:var(--faint);display:grid;place-items:center;font-size:17px;line-height:1;padding-bottom:1px;opacity:0;transition:opacity .15s,background .15s,color .15s}
+.card-head:hover .card-copy,.card.selected>.card-head .card-copy,.card-copy:focus-visible,.card-head:hover .card-add,.card.selected>.card-head .card-add,.card-add:focus-visible{opacity:1}
+.card-copy:hover,.card-add:hover{background:var(--raised);color:var(--ink)}
 /* while a session is being dragged, cards that would start from it are outlined — no reflow, nothing moves under the pointer */
 .stage.sess-drag .card.idea{outline:1px dashed var(--line-2);outline-offset:2px}
 /* children live inside the parent, along a tree rail; height animates so neighbours slide rather than jump */
