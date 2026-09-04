@@ -439,3 +439,28 @@ def test_the_copy_button_is_on_every_card_and_in_the_inspector(server):
     assert ".card.selected>.card-head .card-copy" in reveal  # the open card keeps its button visible
     with urllib.request.urlopen(server["url"] + "/", timeout=10) as res:
         assert b"<kbd>C</kbd> copy" in res.read()
+
+
+def test_the_page_says_when_it_last_read_the_sessions(server):
+    """A "3m" on a session row is Claude Code's clock (its last hook event). When *folio*
+    last looked is a different question, and the page has to answer it out loud --
+    otherwise a paused poll (typing, dragging, a menu open) is indistinguishable from
+    Claude going quiet. The rail head carries a label that ticks every second."""
+    with urllib.request.urlopen(server["url"] + "/", timeout=10) as res:
+        html = res.read().decode()
+    head = html.split('<div class="rail-head">', 1)[1].split("</div>", 1)[0]
+    assert 'id="fresh"' in head and 'class="fresh"' in head, "the label sits in the Sessions rail head"
+    with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
+        assert res.status == 200 and res.headers["Content-Type"].startswith("text/javascript")
+        js = res.read().decode()
+    assert "function freshLabel(" in js and "function pauseReason(" in js
+    assert "setInterval(tick, 1000)" in js, "one ticker advances the label and polls when a read is due"
+    assert "setInterval(() => { if (canRefresh()) refresh(); }" not in js, "the old blind poll loop is gone"
+    assert "'visibilitychange'" in js and "pollNow" in js, "coming back to the tab reads at once"
+    assert js.count("title: agoTip(s)") == 2, "the row age (rail) and the inspector age both say whose clock they are"
+    assert "FRESH.error = (e && e.message)" in js, "a failed poll is a state of the label, not a toast that blocks the next poll"
+    with urllib.request.urlopen(server["url"] + "/static/style.css", timeout=10) as res:
+        assert res.status == 200 and res.headers["Content-Type"].startswith("text/css")
+        css = res.read().decode()
+    for sel in (".fresh{", ".fresh.paused{", ".fresh.err{", ".fresh .fdot{"):
+        assert any(l.startswith(sel) or ("}" + sel) in l for l in css.splitlines()), sel
