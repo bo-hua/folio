@@ -23,6 +23,7 @@ const FOCUS_ORDER = ['all', 'done', 'live'];
 let OV = null, AREAS = [], CARDS = [], SESSIONS = [], SPARES = { standing_by: 0 };
 const state = { cam: { x: 16, y: 8, s: 0.9 }, selected: null, detail: null, railFilter: 'all', allRepos: false, attnCursor: -1, resumeOpen: null, focus: 'all' };
 const collapsed = new Set();
+const unfolded = new Set(); // parents whose done-fold you have opened (see foldKids)
 let VISIBLE = null; // ids the filter keeps, or null when nothing is filtered
 
 // ------------------------------------------------------------------ helpers
@@ -91,17 +92,33 @@ function computeVisible() {
 // and a session that needs you keeps its card visible, so it can never be hidden here.
 const railVisible = s => { const c = s.item && cardById(s.item); return !c || isVisible(c); };
 const hiddenCount = () => VISIBLE ? CARDS.length - VISIBLE.size : 0;
+// --- the done fold. Finished work piles up under a long-lived parent, and a card with a dozen
+// done children was a column taller than the rest of the canvas put together. So a long list
+// folds its done children into one line -- "13 done" -- and stays the height of its open work.
+// The line opens on a click. Nothing is filtered: the fold is drawing, not visibility, and a
+// short list never folds (the line would be as tall as what it replaced).
+// A done card stays out of the fold for the same reasons Hide done keeps it on the canvas:
+// something inside it is still open, a session is live on it, or it is the card you have open.
+const FOLD_AT = 6; // a list longer than this folds
+function foldable(c) { return lifecycle(c) === 'done' && c.id !== state.selected && !sessOf(c.id).some(s => LIVE_STATES.has(s.state)) && kidsOf(c.id).every(foldable); }
+function foldKids(id, kids) { // -> { shown, folded }: the children to draw, and the done ones the line stands for
+  if (kids.length <= FOLD_AT) return { shown: kids, folded: [] };
+  const folded = kids.filter(foldable);
+  return { shown: unfolded.has(id) ? kids : kids.filter(k => !folded.includes(k)), folded }; // open, the line still counts them
+}
+// --- end of the done fold
 function ageText(s) { if (s < 45) return 'now'; if (s < 3600) return `${Math.round(s / 60)}m`; if (s < 86400) return `${Math.round(s / 3600)}h`; return `${Math.round(s / 86400)}d`; }  // s = seconds
 function timeAgo(iso) { return iso ? ageText(Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000)) : '—'; }
 function shortPath(p) { if (!p) return ''; const m = p.match(/^\/(?:Users|home)\/[^/]+/); return m ? '~' + p.slice(m[0].length) : p; }
 function railState(s) { return ['needs_you', 'working', 'ready'].includes(s.state) ? s.state : 'ended'; }
 function isEditing() { const a = document.activeElement; return !!(a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT' || a.isContentEditable)); }
 function persist() {
-  try { localStorage.setItem('folio.collapsed', JSON.stringify([...collapsed])); localStorage.setItem('folio.cam', JSON.stringify(state.cam)); localStorage.setItem('folio.focus', state.focus); } catch (e) { /* private mode etc. */ }
+  try { localStorage.setItem('folio.collapsed', JSON.stringify([...collapsed])); localStorage.setItem('folio.unfolded', JSON.stringify([...unfolded])); localStorage.setItem('folio.cam', JSON.stringify(state.cam)); localStorage.setItem('folio.focus', state.focus); } catch (e) { /* private mode etc. */ }
 }
 function restore() {
   try {
     (JSON.parse(localStorage.getItem('folio.collapsed') || '[]')).forEach(id => collapsed.add(id));
+    (JSON.parse(localStorage.getItem('folio.unfolded') || '[]')).forEach(id => unfolded.add(id));
     const cam = JSON.parse(localStorage.getItem('folio.cam') || 'null'); if (cam && typeof cam.s === 'number') state.cam = cam;
     const f = localStorage.getItem('folio.focus'); if (f && FOCUS_MODES[f]) state.focus = f;
   } catch (e) { /* ignore */ }
@@ -294,8 +311,21 @@ function cardEl(c, depth = 0) {
     el.appendChild(row);
   }
   if (isCollapsed) el.appendChild(compStrip(kids));
-  if (kids.length && !isCollapsed) el.appendChild(h('div', { class: 'kids' }, h('div', {}, h('div', { class: 'kids-list' }, ...kids.map(k => cardEl(k, depth + 1))))));
+  if (kids.length && !isCollapsed) {
+    const { shown, folded } = foldKids(c.id, kids);
+    const list = h('div', { class: 'kids-list' }, ...shown.map(k => cardEl(k, depth + 1)));
+    if (folded.length) list.appendChild(foldLine(c, folded.length));
+    el.appendChild(h('div', { class: 'kids' }, h('div', {}, list)));
+  }
   return el;
+}
+// the line a long list folds its done children into. It sits last, where finished work would
+// have trailed off anyway, and is the way to see those cards in place again.
+function foldLine(c, n) {
+  const open = unfolded.has(c.id), cards = `${n} done card${n === 1 ? '' : 's'}`;
+  return h('button', { class: `fold${open ? ' open' : ''}`, 'data-act': 'fold', 'aria-expanded': open ? 'true' : 'false',
+    title: open ? `Fold the ${cards} back into this line` : `${cards}, folded so a long list stays short — click to show them here` },
+    h('i', { class: 'glyph done' }), `${n} done`, chevron());
 }
 function areaEl(a) {
   const cards = visTopOf(a), aa = areaAttn(a), cols = colsFor(cards.length);
@@ -523,6 +553,15 @@ function reveal(id, flash = true) {
   select(id);
   if (opened) { persist(); ancestors(id).forEach(pid => { const k = $(`.card[data-id="${pid}"] > .kids`); if (k) k.classList.add('opening'); }); }
   ensureVisible(cardRect(id), 56); if (flash) flashCard(id);
+}
+const foldLineOf = id => $(`.card[data-id="${id}"] > .kids > div > .kids-list > .fold`);
+function toggleFold(id) {
+  const line = foldLineOf(id), was = line ? line.getBoundingClientRect().top : null;
+  if (unfolded.has(id)) unfolded.delete(id); else unfolded.add(id);
+  persist(); render();
+  // folding pulls the line up by everything that left; keep it where the click landed instead of
+  // leaving the pointer over empty canvas. Opening adds cards below the line, so it stays put on its own.
+  if (was !== null && !unfolded.has(id)) { const now = foldLineOf(id); if (now) { const d = now.getBoundingClientRect().top - was; if (d) setCam(state.cam.x, state.cam.y - d, state.cam.s, false); } }
 }
 function toggleCollapse(id) {
   if (!kidsOf(id).length) return;
@@ -777,6 +816,7 @@ stage.addEventListener('click', e => {
   const act = e.target.closest('[data-act]'); if (!act || e.target.closest('.inspector')) return;
   const a = act.dataset.act;
   if (a === 'toggle') toggleCollapse(act.closest('.card').dataset.id);
+  if (a === 'fold') toggleFold(act.closest('.card').dataset.id);
   if (a === 'add-to-area') newCard({ area: act.closest('.area').dataset.area });
   if (a === 'area-menu') openAreaMenu(act, areaById(act.closest('.area').dataset.area));
   if (a === 'copy-brief') copyBrief(cardById(act.closest('.card').dataset.id));

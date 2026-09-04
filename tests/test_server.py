@@ -441,6 +441,29 @@ def test_the_copy_button_is_on_every_card_and_in_the_inspector(server):
         assert b"<kbd>C</kbd> copy" in res.read()
 
 
+def test_a_long_list_folds_its_done_children_into_one_line(server):
+    """A parent with a dozen done children was a column taller than the rest of the
+    canvas. The page must carry the fold: the rule, the line on the card, the click
+    that opens it, and the style behind it. (The rule itself is exercised in
+    tests/test_fold_done.py.)"""
+    with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
+        assert res.status == 200 and res.headers["Content-Type"].startswith(("application/javascript", "text/javascript"))
+        js = res.read().decode()
+    assert "// --- the done fold." in js and "// --- end of the done fold" in js  # the landmarks the unit test extracts by
+    card = js.split("function cardEl(c, depth = 0) {", 1)[1].split("\nfunction ", 1)[0]
+    assert "foldKids(c.id, kids)" in card and "shown.map(k => cardEl(k, depth + 1))" in card  # the card draws the fold's answer, not every child
+    assert js.count("'data-act': 'fold'") == 1
+    clicks = js.split("stage.addEventListener('click'", 1)[1].split("});", 1)[0]
+    assert "a === 'fold'" in clicks and "toggleFold(" in clicks
+    assert "'folio.unfolded'" in js  # an opened fold survives a reload, like a collapsed card does
+    with urllib.request.urlopen(server["url"] + "/static/style.css", timeout=10) as res:
+        assert res.status == 200 and res.headers["Content-Type"].startswith("text/css")
+        css = res.read().decode()
+    line = next(l for l in css.splitlines() if l.startswith(".fold{"))
+    assert "dashed" in line  # the same "more here, out of sight" vocabulary as the filter's hidden counts
+    assert any(l.startswith(".fold.open svg{") for l in css.splitlines())  # the chevron turns when the fold is open
+
+
 def test_the_page_says_when_it_last_read_the_sessions(server):
     """A "3m" on a session row is Claude Code's clock (its last hook event). When *folio*
     last looked is a different question, and the page has to answer it out loud --

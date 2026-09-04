@@ -63,7 +63,8 @@ shows a banner.
 - Runtime state depends on the hook: a prose question looks like an ordinary turn
   end until Claude's `idle_prompt`; a killed session emits no `SessionEnd`, so it is
   shown as *inactive* only via pid/staleness heuristics.
-- Every card is expanded by default; deep trees may want to start collapsed.
+- Every card is expanded by default; only a long list (more than six children)
+  folds its done children into one line. Deep trees may still want to start collapsed.
 - Resume is command-copy only (no embedded terminal); notes are a plain textarea;
   no automatic AI-state generation; no transcript viewer; no auth (loopback only).
 - Renaming an area = renaming its directory.
