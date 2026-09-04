@@ -128,7 +128,6 @@ def cmd_sessions(args) -> int:
     data = App(config).recent_sessions(include_all=args.all)
     if not data["sessions"]:
         print("no sessions observed" + ("" if args.all else " inside the configured repo (try --all)"))
-        return 0
     for s in data["sessions"]:
         where = s["worktree"] or s["cwd"] or "-"
         branch = f"[{s['branch']}]" if s["branch"] else ""
@@ -136,6 +135,11 @@ def cmd_sessions(args) -> int:
         title = s["title"] or s["auto_title"]
         if title:
             print(f"{'':20} {title}")
+    standing_by = (data.get("spares") or {}).get("standing_by", 0)
+    if standing_by:
+        # Claude Code's pre-started next background session: no prompt yet, nothing to resume.
+        noun = "spare session" if standing_by == 1 else "spare sessions"
+        print(f"(+{standing_by} {noun} standing by for the next background job -- not listed until prompted)")
     return 0
 
 
