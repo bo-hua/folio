@@ -463,9 +463,10 @@ function titleUnderEdit(ins, id) {
 function restoreTitleEdit(t, keep) { t.value = keep.value; fitTitle(t); t.focus({ preventScroll: true }); t.setSelectionRange(keep.start, keep.end, keep.dir); }
 function renderInspector() {
   const ins = $('#inspector'); const c = state.selected && cardById(state.selected);
-  if (!c) { ins.classList.remove('open'); ins.dataset.card = ''; return; }
+  if (!c) { ins.classList.remove('open'); ins.dataset.card = ''; insShown = null; return; }
   const d = state.detail && state.detail.id === c.id ? state.detail : null;
   const typing = titleUnderEdit(ins, c.id);
+  const restoreScroll = keepScroll(ins, c.id);
   ins.classList.add('open'); ins.innerHTML = ''; ins.dataset.card = c.id;
   const lc = lifecycle(c), kids = kidsOf(c.id), sess = sessOf(c.id), ag = attn(c.id), area = areaOf(c.id);
   const path = h('div', { class: 'ins-path' }, h('b', {}, area ? area.name : c.area));
@@ -532,6 +533,26 @@ function renderInspector() {
   const n = descendantCount(c.id);
   body.appendChild(h('div', { class: 'sec' }, h('button', { class: 'danger', 'data-act': 'delete' }, n ? `Delete card and ${n} inside…` : 'Delete card…'), d ? h('div', { class: 'ins-foot' }, d.path) : ''));
   ins.appendChild(body);
+  restoreScroll();
+}
+
+/* The poll redraws this panel every few seconds, and a redraw used to start at the top:
+   the body is a new element, and the notes box -- the same node, kept by noteEditorFor --
+   loses its scroll position while it is out of the document. Reading a long note, you
+   were thrown back to its first line on every refresh. So a redraw of the card you
+   already have open remembers where the body, and anything scrolled inside it, was and
+   puts it back once rebuilt. Opening another card still starts at the top. */
+let insShown = null;   // the card the inspector last drew
+function keepScroll(ins, id) {
+  const same = insShown === id; insShown = id;
+  if (!same) return () => { };
+  const body = $('.ins-body', ins), top = body ? body.scrollTop : 0;
+  const inner = $$('*', ins).filter(e => e !== body && e.scrollTop > 0).map(e => [e, e.scrollTop]);
+  return () => {
+    const nb = $('.ins-body', ins);
+    if (nb && top) nb.scrollTop = top;
+    for (const [e, t] of inner) if (e.isConnected) e.scrollTop = t;   // the notes box came back; a node that did not is left alone
+  };
 }
 
 // ------------------------------------------------------------------ notes editor
