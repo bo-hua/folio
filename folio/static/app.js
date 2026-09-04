@@ -20,7 +20,7 @@ const FOCUS_MODES = {
 };
 const FOCUS_ORDER = ['all', 'done', 'live'];
 
-let OV = null, AREAS = [], CARDS = [], SESSIONS = [];
+let OV = null, AREAS = [], CARDS = [], SESSIONS = [], SPARES = { standing_by: 0 };
 const state = { cam: { x: 16, y: 8, s: 0.9 }, selected: null, detail: null, railFilter: 'all', allRepos: false, attnCursor: -1, resumeOpen: null, focus: 'all' };
 const collapsed = new Set();
 let VISIBLE = null; // ids the filter keeps, or null when nothing is filtered
@@ -126,6 +126,9 @@ async function load() {
   AREAS = OV.areas.map(a => ({ id: a.name, name: a.name, count: a.count }));
   CARDS = OV.items.map(i => ({ id: i.id, name: i.name, area: i.area, parent: i.parent || null, order: i.order, lifecycle: i.lifecycle, human: i.human_status, parkNote: i.park_note || '', hasAi: i.has_ai_state, updated: i.updated }));
   SESSIONS = OV.sessions.map(s => ({ id: s.id, short: s.short_id, title: s.title || '', autoTitle: s.auto_title || '', prompt: s.last_prompt || '', state: s.state, attention: s.attention, updated: s.updated_at, cwd: s.cwd, branch: s.branch, inRepo: s.in_repo, item: s.item || null, resume: s.resume }));
+  // Claude Code's pre-started next background session(s): not sessions yet, so the server
+  // counts them instead of listing them -- the rail shows one quiet line, never a row.
+  SPARES = OV.spares || { standing_by: 0 };
   if (state.selected && !cardById(state.selected)) { state.selected = null; state.detail = null; }
 }
 async function loadDetail(id) {
@@ -333,6 +336,12 @@ function renderRail() {
   if (!any) rail.appendChild(h('div', { class: 'rail-empty' }, hidden ? 'Every session here is on a card the filter hides.' : state.railFilter === 'unattached' ? 'Every session is attached to a card.' : state.railFilter === 'attention' ? 'Nothing needs you right now.' : 'No Claude sessions observed yet. Install the hook (folio hooks install) and start one.'));
   if (hidden) rail.appendChild(h('button', { class: 'rail-hidden', title: `Their cards are hidden by the “${FOCUS_MODES[state.focus].label.toLowerCase()}” filter — click to show everything.`, onclick: () => setFocus('all') },
     `${hidden} on hidden card${hidden === 1 ? '' : 's'}`));
+  // The spare is Claude Code's next background session, started ahead of time: no prompt,
+  // no title, nothing to open or attach. It used to sit under Ready as “Untitled”. Say it
+  // exists, without giving it a row -- it gets one the moment a job claims it.
+  const spares = SPARES.standing_by;
+  if (spares && state.railFilter !== 'attention') rail.appendChild(h('div', { class: 'rail-spare', title: 'Claude Code keeps the next background session started ahead of time so a new job opens at once. Nothing has prompted it yet, so there is nothing to open or attach; it joins the list as a normal session the moment a job claims it.' },
+    h('i', { class: 'dot spare' }), `${spares} spare session${spares === 1 ? '' : 's'} standing by for the next job`));
 }
 function fitTitle(el) { if (!el.isConnected) return; el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
 function renderInspector() {

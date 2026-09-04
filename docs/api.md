@@ -5,7 +5,7 @@ Everything is served from the loopback bind address (`127.0.0.1:4317` by default
 
 | method | path | purpose |
 |---|---|---|
-| GET | `/api/overview` | everything the board needs (areas, items, rolled-up runtime state, whether the server is running stale code) |
+| GET | `/api/overview` | everything the board needs (areas, items, rolled-up runtime state, whether the server is running stale code, and `spares.standing_by`: Claude Code's pre-started next background sessions, which are counted here rather than listed) |
 | GET | `/api/repo` | git worktree snapshot |
 | GET, POST | `/api/areas` | list / create areas |
 | DELETE | `/api/areas/<name>` | delete an area and its items (cascade) |
@@ -15,7 +15,7 @@ Everything is served from the loopback bind address (`127.0.0.1:4317` by default
 | GET | `/api/items/<id>/brief` | the card as one block of text to paste into a Claude prompt (what the copy button copies) |
 | POST | `/api/items/<id>/sessions` | attach a session |
 | PATCH, DELETE | `/api/items/<id>/sessions/<sid>` | retitle / detach a session |
-| GET | `/api/sessions[?all=1]` | sessions the hook has observed |
+| GET | `/api/sessions[?all=1]` | sessions the hook has observed, plus the same `spares` count |
 | GET | `/api/sessions/<sid>/resume` | how to get back into that session |
 
 Notes:
@@ -24,6 +24,10 @@ Notes:
 - `DELETE /api/items/<id>` cascades to everything nested under it.
 - Attaching a session detaches it from any other item unless `exclusive: false` —
   a session lives on exactly one card.
+- Every session carries `spare` (bool). A spare is a background session Claude Code
+  started ahead of the next job and nothing has prompted yet: not listed until its
+  first prompt lands, unless you attached it to a card yourself. See
+  [hook.md](hook.md#the-spare-session).
 - `GET /api/items/<id>/brief` returns `{id, name, text}`. `text` is the card's name,
   id and file, its notes, links, attached sessions (state, branch, cwd, last
   prompt), children, and the notes of every card above it. It never starts with

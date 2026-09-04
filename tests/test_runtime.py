@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from folio.runtime import (
-    ENDED, INACTIVE, NEEDS_YOU, READY, WORKING, RuntimeStore, aggregate_attention, effective_state, iso,
+    ENDED, INACTIVE, NEEDS_YOU, READY, WORKING, RuntimeStore, aggregate_attention, effective_state, is_spare, iso,
     subagent_busy, transition,
 )
 
@@ -181,3 +181,30 @@ def test_subagent_and_main_events_inside_the_same_second_are_still_ordered(tmp_p
     # and the other way round: the main thread spoke last, so ready means ready
     store.record_event(ev("Stop"), now=t0 + timedelta(microseconds=600_000))
     assert subagent_busy(store.get(SID)) is False
+
+
+def test_a_spare_is_a_background_session_nobody_has_prompted_yet(tmp_path):
+    """Claude Code's daemon claims a spare process ahead of the next job: SessionStart
+    fires, then nothing -- until a job prompts it, or it is retired an hour later without
+    a SessionEnd (`bg retire <id>: stale-spare` in the daemon log). Read off the record."""
+    store = RuntimeStore(tmp_path / "runtime")
+    t0 = datetime(2026, 9, 3, 0, 12, 16, tzinfo=timezone.utc)
+    store.record_event(ev("SessionStart", source="startup"), now=t0, process_finder=lambda: (32350, True))
+    rec = store.get(SID)
+    assert is_spare(rec) is True
+    # while it stands by it is, technically, ready -- for the daemon, not for you
+    assert effective_state(rec, t0 + timedelta(minutes=30), alive=lambda pid: True) == READY
+    # retired: the process is gone and no SessionEnd ever comes -- still a spare, never a session
+    assert effective_state(rec, t0 + timedelta(minutes=70), alive=lambda pid: False) == INACTIVE
+    assert is_spare(rec) is True
+
+    # a job claims it: the first prompt makes it a session like any other
+    store.record_event(ev("UserPromptSubmit", prompt="work on task"), now=t0 + timedelta(seconds=1))
+    assert is_spare(store.get(SID)) is False and store.get(SID)["state"] == WORKING
+
+    # an interactive session that just opened is a real terminal waiting for you, not a spare
+    assert is_spare({"background": False, "last_event": "SessionStart", "state": READY}) is False
+    assert is_spare({"background": None, "last_event": "SessionStart", "state": READY}) is False  # older hook: unknown
+    # and a background session that has stopped once has been prompted at least once
+    assert is_spare({"background": True, "last_event": "Stop", "state": READY}) is False
+    assert is_spare({"background": True, "last_event": "SessionEnd", "state": ENDED}) is False

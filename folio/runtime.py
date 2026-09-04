@@ -129,6 +129,26 @@ def subagent_busy(record: dict) -> bool:
     return main_at is None or agent_at > main_at
 
 
+def is_spare(record: dict) -> bool:
+    """A background session Claude Code started ahead of time and nobody has prompted yet.
+
+    The daemon behind `claude --bg` / `claude agents` keeps the *next* session warm so
+    a job opens instantly: it claims a spare process, which fires `SessionStart`, and
+    then either hands it a prompt within the second (a real job) or leaves it standing
+    by, retiring it after about an hour idle -- with no `SessionEnd` ever
+    (`bg claimed-spare <id> (spare)` / `bg retire <id>: stale-spare` in its log,
+    Claude Code 2.1.25x-2.1.260).
+
+    Until a prompt arrives it is plumbing, not work: no title, no transcript on disk,
+    nothing to resume, no terminal you could type into. Left alone it sits in the rail
+    as an untitled *ready* session for an hour and then as an untitled *inactive* one
+    for a week. It is recognised from the record alone -- background, and the only
+    main-thread event ever seen is the start -- and the server keeps it out of the
+    session lists; it becomes a normal session the moment its first prompt lands.
+    """
+    return record.get("background") is True and record.get("last_event") == "SessionStart"
+
+
 def pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
