@@ -56,6 +56,10 @@ const lifecycle = c => c.lifecycle || 'idea';
 // it (read live from its transcript), else the id.
 const sessTitle = s => s.title || s.autoTitle || `Untitled · ${s.short}`;
 const sessTip = s => [sessTitle(s), s.prompt && `last prompt: ${s.prompt}`, s.id].filter(Boolean).join('\n');
+// The age on a session is Claude Code's clock -- its last hook event -- not when folio last looked.
+const agoText = iso => !iso ? 'no activity seen' : timeAgo(iso) === 'now' ? 'active just now' : `active ${timeAgo(iso)} ago`;
+const agoTip = s => !s.updated ? 'Claude Code has not reported any activity for this session — is the folio hook installed?'
+  : `Claude Code last reported activity ${timeAgo(s.updated) === 'now' ? 'under a minute' : timeAgo(s.updated)} ago${s.lastEvent ? ` (${s.lastEvent})` : ''}, at ${new Date(s.updated).toLocaleString()}.\nThat is Claude's clock, not folio's: folio re-reads these records every ${POLL_MS / 1000}s — see “checked … ago” at the top of the Sessions list.`;
 function ancestors(id) { const out = []; let c = cardById(id); while (c && c.parent) { out.unshift(c.parent); c = cardById(c.parent); } return out; }
 function areaOf(id) { let c = cardById(id); while (c && c.parent) c = cardById(c.parent); return c ? areaById(c.area) : null; }
 function isDescendant(id, ofId) { let c = cardById(id); while (c && c.parent) { if (c.parent === ofId) return true; c = cardById(c.parent); } return false; }
@@ -87,11 +91,8 @@ function computeVisible() {
 // and a session that needs you keeps its card visible, so it can never be hidden here.
 const railVisible = s => { const c = s.item && cardById(s.item); return !c || isVisible(c); };
 const hiddenCount = () => VISIBLE ? CARDS.length - VISIBLE.size : 0;
-function timeAgo(iso) {
-  if (!iso) return '—';
-  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
-  if (s < 45) return 'now'; if (s < 3600) return `${Math.round(s / 60)}m`; if (s < 86400) return `${Math.round(s / 3600)}h`; return `${Math.round(s / 86400)}d`;
-}
+function ageText(s) { if (s < 45) return 'now'; if (s < 3600) return `${Math.round(s / 60)}m`; if (s < 86400) return `${Math.round(s / 3600)}h`; return `${Math.round(s / 86400)}d`; }  // s = seconds
+function timeAgo(iso) { return iso ? ageText(Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000)) : '—'; }
 function shortPath(p) { if (!p) return ''; const m = p.match(/^\/(?:Users|home)\/[^/]+/); return m ? '~' + p.slice(m[0].length) : p; }
 function railState(s) { return ['needs_you', 'working', 'ready'].includes(s.state) ? s.state : 'ended'; }
 function isEditing() { const a = document.activeElement; return !!(a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT' || a.isContentEditable)); }
@@ -125,23 +126,70 @@ async function load() {
   OV = await api('GET', `/api/overview${state.allRepos ? '?all=1' : ''}`);
   AREAS = OV.areas.map(a => ({ id: a.name, name: a.name, count: a.count }));
   CARDS = OV.items.map(i => ({ id: i.id, name: i.name, area: i.area, parent: i.parent || null, order: i.order, lifecycle: i.lifecycle, human: i.human_status, parkNote: i.park_note || '', hasAi: i.has_ai_state, updated: i.updated }));
-  SESSIONS = OV.sessions.map(s => ({ id: s.id, short: s.short_id, title: s.title || '', autoTitle: s.auto_title || '', prompt: s.last_prompt || '', state: s.state, attention: s.attention, updated: s.updated_at, cwd: s.cwd, branch: s.branch, inRepo: s.in_repo, item: s.item || null, resume: s.resume }));
+  SESSIONS = OV.sessions.map(s => ({ id: s.id, short: s.short_id, title: s.title || '', autoTitle: s.auto_title || '', prompt: s.last_prompt || '', state: s.state, attention: s.attention, updated: s.updated_at, lastEvent: s.last_event, cwd: s.cwd, branch: s.branch, inRepo: s.in_repo, item: s.item || null, resume: s.resume }));
   if (state.selected && !cardById(state.selected)) { state.selected = null; state.detail = null; }
 }
 async function loadDetail(id) {
   try { const d = await api('GET', `/api/items/${encodeURIComponent(id)}`); if (state.selected === id) { state.detail = d; renderInspector(); } }
   catch (e) { /* card may have vanished; the next refresh clears the selection */ }
 }
-async function refresh() { try { await load(); render(); if (state.selected) loadDetail(state.selected); } catch (e) { toastError(e); } }
+async function reload() {  // one full read of the server, and the page redrawn from it
+  const first = !OV;
+  await load();
+  FRESH.at = Date.now(); FRESH.error = null;
+  render();
+  if (state.selected) loadDetail(state.selected);
+  if (first) { applyCam(false); const id = hashCard(); if (id && cardById(id)) reveal(id, false); }
+}
+async function refresh() { try { await reload(); } catch (e) { toastError(e); } }  // for something you asked for: a failure is a toast
+async function poll() {  // for the ticker: a failure is a state of the indicator, and the next tick tries again
+  FRESH.tried = Date.now();
+  try { await reload(); } catch (e) { FRESH.error = (e && e.message) || String(e); renderFresh(); }
+}
 function canRefresh() { return !ptr && !sdrag && !isEditing() && !popEl && !$('.scrim') && inFlight === 0 && !document.hidden && !$('#toast').classList.contains('show'); }  // an open menu or confirm dialog owns the canvas until it closes
+
+// ------------------------------------------------------------------ freshness
+// Two clocks show on this page and they are easy to confuse. The "3m" on a session row is Claude
+// Code's: when its hook last fired for that session. This one is folio's: when this page last read
+// those records. It ticks every second, so a pause -- polling stops while you type, drag or have a
+// menu open, so nothing moves under you -- is something you can see rather than a page gone quiet.
+const FRESH = { at: 0, tried: 0, error: null };  // ms clock of the last successful read, of the last attempt, and why it failed
+function pauseReason() {
+  if (document.hidden) return 'this tab is in the background';
+  if (isEditing()) return 'you are typing';
+  if (ptr || sdrag) return 'you are dragging';
+  if (popEl || $('.scrim')) return 'a menu or dialog is open';
+  if ($('#toast').classList.contains('show')) return 'a message is showing';
+  return null;
+}
+function freshLabel(f, now, paused) {
+  const secs = f.at ? Math.max(0, Math.round((now - f.at) / 1000)) : null;
+  const ago = secs === null ? null : secs < 2 ? 'just now' : secs < 60 ? `${secs}s ago` : `${ageText(secs)} ago`;
+  const every = `Claude Code's session records every ${POLL_MS / 1000}s.`;
+  const clocks = 'The time on a session row is a different clock: it says when Claude Code last reported activity for that session.';
+  if (f.error) return { cls: 'err', text: ago ? `unreachable · ${ago}` : 'server unreachable', title: `The last read failed: ${f.error}\nWhat you see is from the last successful read${ago ? `, ${ago}` : ''}. folio keeps trying to re-read ${every} Click to retry now.` };
+  if (paused) return { cls: 'paused', text: ago ? `paused · checked ${ago}` : 'paused', title: `Not refreshing while ${paused}, so nothing moves under you. It resumes on its own. Click to refresh now.\n\n${clocks}` };
+  return { cls: '', text: ago ? `checked ${ago}` : 'checking…', title: `folio re-reads ${every} Click to check now.\n\n${clocks}` };
+}
+function renderFresh() {
+  const el = $('#fresh'); if (!el) return;
+  const l = freshLabel(FRESH, Date.now(), pauseReason());
+  // updated in place, and only what changed: this runs every second, and a rewritten title would flicker the tooltip you are reading
+  const cls = 'fresh' + (l.cls ? ` ${l.cls}` : ''), ft = $('.ft', el);
+  if (el.className !== cls) el.className = cls;
+  if (el.title !== l.title) el.title = l.title;
+  if (ft.textContent !== l.text) ft.textContent = l.text;
+  if (!OV) $('#summary').textContent = FRESH.error ? 'Could not reach the folio server' : 'Loading…';
+}
+function tick() { if (canRefresh() && Date.now() - FRESH.tried >= POLL_MS) poll(); else renderFresh(); }
+function pollNow() { FRESH.tried = 0; tick(); }  // back to the tab, or the window: do not wait out the interval
 
 // mutation helper: run the request, reload, toast (with an inverse request as Undo)
 async function mutate(run, { msg, undo, error = 'Something went wrong' } = {}) {
   try {
     await run();
-    await load(); render();
-    if (state.selected) loadDetail(state.selected);
-    if (msg) toast(msg, undo ? async () => { try { await undo(); await load(); render(); if (state.selected) loadDetail(state.selected); } catch (e) { toastError(e); } } : null);
+    await reload();
+    if (msg) toast(msg, undo ? async () => { try { await undo(); await reload(); } catch (e) { toastError(e); } } : null);
   } catch (e) { toastError(e); refresh(); }
 }
 
@@ -281,7 +329,7 @@ function render() {
   world.appendChild(h('i', { class: 'insline', id: 'insline' }));
   if (!AREAS.length) stage.appendChild(h('div', { class: 'empty-state', id: 'emptyState' }, h('div', {}, h('div', { style: 'font-family:var(--serif);font-style:italic;font-size:22px;color:var(--ink);margin-bottom:6px' }, 'Nothing here yet'), 'Create an Area with + Area, then + Idea.')));
   else { const es = $('#emptyState'); if (es) es.remove(); }
-  renderTopbar(); renderRail(); renderInspector(); renderAttnPill();
+  renderTopbar(); renderRail(); renderInspector(); renderAttnPill(); renderFresh();
 }
 function renderFocus() {
   const hid = hiddenCount();
@@ -325,7 +373,7 @@ function renderRail() {
       g.appendChild(h('div', { class: 'srow', 'data-sid': s.id, tabindex: '0', title: sessTip(s) }, h('i', { class: `dot ${s.state}` }),
         h('div', { style: 'min-width:0' }, h('div', { class: 't' }, sessTitle(s)),
           s.prompt ? h('div', { class: 'p' }, s.prompt) : '',
-          h('div', { class: 'm' }, s.branch ? h('span', { class: 'br' }, s.branch) : (s.cwd ? h('span', { class: 'cwd', title: s.cwd }, shortPath(s.cwd)) : ''), s.attention ? h('span', {}, `· ${s.attention}`) : '', h('span', { class: 'sid' }, s.short), h('span', { class: 'ago', title: s.updated || '' }, timeAgo(s.updated))),
+          h('div', { class: 'm' }, s.branch ? h('span', { class: 'br' }, s.branch) : (s.cwd ? h('span', { class: 'cwd', title: s.cwd }, shortPath(s.cwd)) : ''), s.attention ? h('span', {}, `· ${s.attention}`) : '', h('span', { class: 'sid' }, s.short), h('span', { class: 'ago', title: agoTip(s) }, timeAgo(s.updated))),
           where)));
     }
     rail.appendChild(g);
@@ -368,7 +416,7 @@ function renderInspector() {
     const row = h('div', { class: 'ins-sess' }, h('i', { class: `dot ${s.state}` }),
       h('div', { style: 'min-width:0' }, h('div', { class: 't' }, h('button', { class: 'link', 'data-act': 'rename-session', 'data-sid': s.id, title: s.title ? 'Click to rename' : 'Named by Claude Code — click to rename' }, sessTitle(s))),
         s.prompt ? h('div', { class: 'p', title: s.prompt }, s.prompt) : '',
-        h('div', { class: 'm' }, h('span', {}, (STATE_LABEL[s.state] || s.state) + (s.attention ? ' · ' + s.attention : '')), s.branch ? h('span', { class: 'mono' }, s.branch) : '', h('span', { class: 'mono', title: s.id }, s.short), h('span', { title: s.updated || '' }, timeAgo(s.updated) + ' ago'))),
+        h('div', { class: 'm' }, h('span', {}, (STATE_LABEL[s.state] || s.state) + (s.attention ? ' · ' + s.attention : '')), s.branch ? h('span', { class: 'mono' }, s.branch) : '', h('span', { class: 'mono', title: s.id }, s.short), h('span', { title: agoTip(s) }, agoText(s.updated)))),
       h('div', { class: 'acts' }, h('button', { class: `mini ${s.state === 'needs_you' ? 'primary' : ''}`, 'data-act': 'resume', 'data-sid': s.id }, s.resume && s.resume.kind === 'attach' ? 'Attach' : (['ended', 'inactive', 'unknown'].includes(s.state) ? 'Resume' : 'Open')), h('button', { class: 'mini', 'data-act': 'detach', 'data-sid': s.id, title: 'Detach from this card (the Claude session itself is untouched)' }, '×')));
     if (state.resumeOpen === s.id && s.resume) {
       row.appendChild(h('div', { class: 'resume-box' },
@@ -804,8 +852,9 @@ function hashCard() { const hsh = location.hash.slice(1); const m = hsh.match(/^
 
 (async function boot() {
   restore();
-  try { await load(); } catch (e) { $('#summary').textContent = 'Could not reach the folio server'; toastError(e); return; }
-  render(); applyCam(false);
-  const id = hashCard(); if (id && cardById(id)) reveal(id, false);
-  setInterval(() => { if (canRefresh()) refresh(); }, POLL_MS);
+  await poll();  // a server that is down at boot is reported in the indicator, not fatal: the ticker keeps trying and the page fills in when it answers
+  setInterval(tick, 1000);  // one ticker: it advances the "checked … ago" label every second and polls whenever a read is due and safe
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) pollNow(); });
+  window.addEventListener('focus', pollNow);
+  $('#fresh').addEventListener('click', () => { if (inFlight === 0) poll(); });  // a click asks outright: menus have already closed on pointerdown, and the button now has focus, so nothing is under edit
 })();
