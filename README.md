@@ -113,7 +113,10 @@ and the app lays it out.
 - **Canvas (centre)** — areas side by side, children nested inside their parent.
   Drag a card into another to make it a child, onto an edge to reorder, onto empty
   space to promote it. Attention glows amber and bubbles up; **J** walks you
-  through it. Scroll pans, ⌘/ctrl-scroll zooms, **F** fits.
+  through it. Scroll pans, ⌘/ctrl-scroll zooms, **F** fits. A long list of
+  children folds its done ones into a single *13 done* line at the bottom, so a
+  parent that has collected finished work stays the height of what is still open;
+  click the line to see them in place.
 - **Inspector (right)** — rename, mark done or park, attached sessions with
   **Open / Resume**, children, notes (⌘-click a link in them to open it), context
   links, delete (cascades after a confirm).
@@ -127,8 +130,8 @@ session attached: open cards with any session, ended or not, plus whatever a ses
 is live on right now). Hiding is by subtree, and a card whose session needs you is
 never hidden — a filter that swallows an alert is worse than no filter.
 
-Deep links are `/#card=<id>`; collapsed subtrees, the camera and the filter are
-remembered per browser.
+Deep links are `/#card=<id>`; collapsed subtrees, opened done-folds, the camera and
+the filter are remembered per browser.
 
 Other commands: `folio worktrees`, `folio sessions [--all]`,
 `folio hooks print|install|uninstall`, `folio tidy` (realign filenames that drifted

@@ -222,6 +222,12 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 @keyframes kidsopen{from{grid-template-rows:0fr}to{grid-template-rows:1fr}}
 .kids > div{overflow:hidden;min-height:0}
 .kids-list{display:flex;flex-direction:column;gap:9px;margin-left:5px;padding:3px 0 3px 13px;border-left:2px solid var(--line-2)}
+/* a long list folds its done children into this one line; dashed, like every "more here, out of sight" in the UI */
+.fold{display:flex;align-items:center;gap:7px;padding:5px 9px 5px 10px;border:1px dashed var(--line-2);border-radius:9px;font-size:11.5px;font-weight:500;color:var(--muted);text-align:left;transition:color .15s,border-color .15s,background .15s}
+.fold:hover{color:var(--ink);border-color:var(--muted);background:var(--raised)}
+.fold .glyph{transform:scale(.9)}
+.fold svg{width:10px;height:10px;margin-left:auto;color:var(--faint);transition:transform .2s var(--ease)}
+.fold.open svg{transform:rotate(90deg)}
 .insline{position:absolute;height:2px;background:var(--accent);border-radius:1px;pointer-events:none;z-index:30;display:none}
 .insline::before{content:"";position:absolute;left:-4px;top:-3px;width:8px;height:8px;border-radius:50%;background:var(--accent)}
 .ghost{position:fixed;z-index:100;pointer-events:none;transform:translate(-10px,-50%);background:var(--surface);border:1px solid var(--line-2);box-shadow:var(--shadow-2);border-radius:9px;padding:6px 11px 6px 9px;font-weight:500;font-size:12.5px;display:flex;gap:7px;align-items:center;max-width:280px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:transform .18s var(--ease),opacity .18s}
