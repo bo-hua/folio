@@ -133,6 +133,11 @@ var NoteEditor = (function () {
   const BLOCKISH = new Set(['UL', 'OL', 'BLOCKQUOTE', 'PRE', 'HR', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P']);
   const kids = n => [...n.childNodes].filter(c => c.nodeType === 1);
 
+  // Blocks the browser can leave inside an <li> — a paste that landed in a bullet (see leaveList).
+  const ITEM_BLOCKS = new Set(['P', 'DIV', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'PRE', 'BLOCKQUOTE', 'HR']);
+  const isBlock = n => n.nodeType === 1 && ITEM_BLOCKS.has(n.tagName);
+  const hasContent = nodes => nodes.some(n => (n.nodeType === 1 ? n.tagName !== 'BR' && n.tagName !== 'INPUT' : n.textContent.trim()));
+
   function listMd(list, lines, level, qp) {
     const ordered = list.tagName === 'OL';
     let n = parseInt(list.getAttribute('start') || '1', 10);
@@ -144,10 +149,26 @@ var NoteEditor = (function () {
         continue;
       }
       const box = kids(li).find(c => c.tagName === 'INPUT' && c.getAttribute('type') === 'checkbox');
-      const marker = ordered ? `${n++}. ` : box ? `- [${box.checked ? 'x' : ' '}] ` : '- ';
-      const text = inlineMd(li, c => isList(c) || c.tagName === 'INPUT').replace(/\s+/g, ' ').trim();
-      lines.push(qp + IND.repeat(level) + marker + text);
-      for (const sub of kids(li)) if (isList(sub)) listMd(sub, lines, level + 1, qp);
+      /* An item is its text, then whatever list is nested in it. Chrome can also
+         leave whole paragraphs inside one <li>, and run together they read as a
+         single word ("Semantic IDPretrainingSFTRL"). So content that follows a
+         nested list, or a block that follows other content, is written as an
+         item of its own, and each nested list attaches to the item written last. */
+      let run = [], written = 0;
+      const item = () => {
+        const text = inlineMd({ childNodes: run }, c => c.tagName === 'INPUT').replace(/\s+/g, ' ').trim();
+        run = [];
+        if (written && !text) return;
+        const marker = ordered ? `${n++}. ` : box && !written ? `- [${box.checked ? 'x' : ' '}] ` : '- ';
+        lines.push(qp + IND.repeat(level) + marker + text);
+        written++;
+      };
+      for (const c of li.childNodes) {
+        if (isList(c)) { item(); listMd(c, lines, level + 1, qp); }
+        else if (isBlock(c) && hasContent(run)) { item(); run.push(c); }
+        else run.push(c);
+      }
+      if (run.length || !written) item();
     }
   }
   function blocksMd(parent, lines, qp) {
@@ -609,6 +630,41 @@ var NoteEditor = (function () {
       }
       // ⌘B and ⌘I are the browser's own and already do the right thing
     });
+    /* Chrome cannot paste blocks into a list item. A bare list is fine — its
+       items are spliced into the list you are in — and so is one paragraph, which
+       becomes the item's text. Anything more lands inside the <li>, or loose
+       inside the <ul>, and the note comes back as one long item with every
+       heading run together ("Semantic IDPretrainingSFTRL"). So such a paste first
+       steps out of the list: split an empty item off at the caret and outdent it
+       until it is a block of its own, then paste there. Every step is an
+       execCommand, so ⌘Z still walks back through the whole paste. */
+    const emptyLi = li => !!li && li.tagName === 'LI' && !inlineMd(li, c => c.tagName === 'INPUT').trim() && !li.querySelector('ul,ol,img');
+    function pastesInPlace(html) {
+      const t = document.createElement('template');
+      t.innerHTML = html;
+      const top = [...t.content.childNodes].filter(n => n.nodeType === 1 || n.textContent.trim());
+      return top.length === 1 && (isList(top[0]) || top[0].tagName === 'P');
+    }
+    function leaveList() {
+      let li = currentLi();
+      if (!li) return;
+      if (!emptyLi(li)) {
+        const inner = li.querySelectorAll('li');
+        if (inner.length) placeCaretAtEnd(inner[inner.length - 1]);   // past its nested list, or Chrome carries the list along
+        document.execCommand('insertParagraph');
+        li = currentLi();
+        if (li && !emptyLi(li)) {                          // the caret stayed with the text: the empty item is the one before it
+          if (!emptyLi(li.previousElementSibling)) document.execCommand('insertParagraph');
+          li = currentLi();
+          if (li && emptyLi(li.previousElementSibling)) placeCaretAtEnd(li.previousElementSibling);
+        }
+      }
+      for (let i = 0; i < 12 && (li = currentLi()); i++) {
+        li.querySelectorAll(':scope > input[type=checkbox]').forEach(b => b.remove());   // outdent would leave a to-do's box on the floor
+        li.classList.remove('task');
+        document.execCommand('outdent');
+      }
+    }
     /* Paste: Markdown becomes real blocks, a URL over a selection becomes a link,
        anything else falls through to the browser. */
     doc.addEventListener('paste', e => {
@@ -620,7 +676,9 @@ var NoteEditor = (function () {
       }
       if (t.includes('\n') || LIST.test(t) || /^#{1,6}\s/.test(t)) {
         e.preventDefault();
-        document.execCommand('insertHTML', false, mdToHtml(t));
+        const html = mdToHtml(t);
+        if (!pastesInPlace(html)) leaveList();
+        document.execCommand('insertHTML', false, html);
         tidy();
         normalizeTasks();
         touched();
