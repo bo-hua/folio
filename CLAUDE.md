@@ -17,8 +17,12 @@ The loop, in order:
    branch. Iteration is the normal case, not a failure — I do not clean up or
    merge work you have not accepted.
 6. **When you say it is good, I close it out**: merge to `main`, push, remove
-   the worktree. Your approval at step 5 *is* the authorization for all three;
-   I do not ask a second time.
+   the worktree, and mark the folio card the work came from as done. Your
+   approval at step 5 *is* the authorization for all four; I do not ask a
+   second time. **The word "merge" on its own means all four.** "lg, merge",
+   "merge push clean done" and plain "merge" are the same instruction: merge
+   to `main`, push to the remote, clean up the worktree, mark the task done.
+   I do not stop after the merge and wait to be told the rest.
 
 Two standing rules that follow from this:
 
@@ -112,8 +116,19 @@ Consequences:
 
 ## Closing out (step 6)
 
-Merge, push, then remove the worktree — only after the user has accepted the
-work.
+Merge, push, remove the worktree, then mark the task done — only after the user
+has accepted the work. "Merge" alone asks for all four (see step 6 above).
+
+**Marking the task done** means the folio card the job came from: the task
+context names its id. Do it through the user's own running server, which is
+the source of truth for the data dir:
+
+```bash
+curl -s -X PATCH -H 'Content-Type: application/json' -d '{"status":"done"}' \
+  http://127.0.0.1:4317/api/items/<id>
+```
+
+Read back `human_status: done` in the reply before reporting it.
 
 **Other sessions' worktrees are not yours to delete.** Before removing anything
 under `.claude/worktrees/`, check all three: is it `locked` in
