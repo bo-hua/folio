@@ -144,11 +144,12 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 /* ---------- stage / canvas ---------- */
 .stage{position:relative;overflow:clip;background-color:var(--bg);background-image:radial-gradient(var(--grid) 1px,transparent 1.2px);background-size:24px 24px;cursor:grab;touch-action:none;user-select:none}
 .stage.panning{cursor:grabbing}
-/* the world is ordinary document flow inside a pan/zoom transform: the app groups Areas into rows, so no
-   pixel width decides who sits beside whom — an Area growing a third column can never break the row */
-.world{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform;width:max-content;display:flex;flex-direction:column;gap:56px;padding:48px;align-items:flex-start}
+/* the world is ordinary document flow inside a pan/zoom transform: the app stacks Areas in columns
+   (see layoutAreas), so no pixel width decides who sits beside whom — an Area growing a third column
+   widens its own column and can never push a neighbour down. The gap is read back by the packing. */
+.world{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform;width:max-content;display:flex;gap:56px;padding:48px;align-items:flex-start}
 .world.anim{transition:transform var(--dur) var(--ease)}
-.area-row{display:flex;gap:56px;align-items:flex-start}
+.area-col{display:flex;flex-direction:column;gap:56px;align-items:flex-start}
 .area{position:relative;border:1px solid var(--area-line);background:var(--area-tint);border-radius:18px;transition:box-shadow .2s,border-color .2s}
 .area.droptarget{box-shadow:0 0 0 3px var(--accent-glow);border-color:var(--accent)}
 .area-head{position:absolute;left:0;top:0;right:0;display:flex;align-items:baseline;gap:14px;padding:16px 22px 0 24px;cursor:grab}

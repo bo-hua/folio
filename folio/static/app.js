@@ -346,19 +346,47 @@ function areaEl(a) {
       h('button', { class: 'area-add', 'data-act': 'add-to-area', title: `New idea in ${a.name}` }, '+')),
     h('div', { class: 'cols' }, ...colEls));
 }
-// how many Areas share a row. A count, not a pixel budget: an Area that grows a third column widens
-// its row rather than being pushed under its neighbour, and the grid only reshuffles when Areas are
-// added or removed — never because a card was created.
-const areasPerRow = n => Math.ceil(Math.sqrt(n));
-function areaRows(areas) {
-  const per = areasPerRow(areas.length), rows = [];
-  for (let i = 0; i < areas.length; i += per) rows.push(areas.slice(i, i + per));
-  return rows;
+// ------------------------------------------------------------------ area layout
+// Areas stack in columns, ceil(sqrt(n)) of them. That is a count, not a pixel budget: an Area that
+// grows a third column widens its own column, and nothing a card does changes how many columns there
+// are. Which column an Area lands in is decided by height. Each Area, in order, goes under the
+// shortest column so far, so a one-card Area sits right under a short neighbour instead of a screen
+// below the tallest one (rows were as tall as their tallest member, and the small Area alone in the
+// second row sat under all that blank space). Heights are read from the DOM, so the packing is
+// remembered between renders and redone only when a fresh one would cut the canvas height by more
+// than LAYOUT_SLACK -- a card created, folded or hidden nudges heights every few seconds, and that
+// must not shuffle Areas around.
+const areaColumns = n => Math.ceil(Math.sqrt(n));
+const LAYOUT_SLACK = 240;   // px of canvas height a fresh packing must save before Areas move
+function packAreas(areas, heightOf, cols, gap) {   // -> one list per column, top to bottom
+  const out = Array.from({ length: cols }, () => []), tall = new Array(cols).fill(0);
+  for (const a of areas) {
+    let k = 0; for (let i = 1; i < cols; i++) if (tall[i] < tall[k]) k = i;   // shortest; ties go left
+    tall[k] += (out[k].length ? gap : 0) + heightOf(a); out[k].push(a);
+  }
+  return out;
+}
+const canvasHeight = (packed, heightOf, gap) => Math.max(0, ...packed.map(col => col.reduce((s, a, i) => s + (i ? gap : 0) + heightOf(a), 0)));
+let LAYOUT = null;   // the packing on screen: { key: ordered Area ids, cols: [[id, ...], ...] }
+function layoutAreas(areas, heightOf, gap) {
+  const key = areas.map(a => a.id).join('\n'), fresh = packAreas(areas, heightOf, areaColumns(areas.length), gap);
+  if (LAYOUT && LAYOUT.key === key) {
+    const kept = LAYOUT.cols.map(ids => ids.map(id => areas.find(a => a.id === id)));
+    if (canvasHeight(kept, heightOf, gap) <= canvasHeight(fresh, heightOf, gap) + LAYOUT_SLACK) return kept;
+  }
+  LAYOUT = { key, cols: fresh.map(col => col.map(a => a.id)) };
+  return fresh;
 }
 function render() {
   computeVisible();
   world.innerHTML = '';
-  areaRows(AREAS).forEach(row => world.appendChild(h('div', { class: 'area-row' }, ...row.map(areaEl))));
+  // build every Area first and measure it, then move each into the column the packing picks
+  const els = new Map(AREAS.map(a => [a.id, areaEl(a)]));
+  world.appendChild(h('div', { class: 'area-col' }, ...els.values()));
+  const gap = parseFloat(getComputedStyle(world).columnGap) || 0;
+  const cols = layoutAreas(AREAS, a => els.get(a.id).offsetHeight, gap);
+  world.innerHTML = '';
+  cols.forEach(col => world.appendChild(h('div', { class: 'area-col' }, ...col.map(a => els.get(a.id)))));
   world.appendChild(h('i', { class: 'insline', id: 'insline' }));
   if (!AREAS.length) stage.appendChild(h('div', { class: 'empty-state', id: 'emptyState' }, h('div', {}, h('div', { style: 'font-family:var(--serif);font-style:italic;font-size:22px;color:var(--ink);margin-bottom:6px' }, 'Nothing here yet'), 'Create an Area with + Area, then + Idea.')));
   else { const es = $('#emptyState'); if (es) es.remove(); }
