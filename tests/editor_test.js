@@ -58,6 +58,22 @@ is('the browser\'s <b> and <i> are markdown too', E.htmlToMd(parseHtml('<p>a <b>
 is('marks do not swallow the space beside them', E.htmlToMd(parseHtml('<p>a <b>bold </b>x</p>')), 'a **bold** x');
 is('an empty paragraph is not a stray line', E.htmlToMd(parseHtml('<p><br></p>')), '');
 is('a bare div is a paragraph', E.htmlToMd(parseHtml('<div>text</div>')), 'text');
+// Chrome can leave whole paragraphs inside one <li> after a paste: each block past the
+// first is an item of its own, never glued onto the last word ("Semantic IDPretraining").
+is('a paragraph after a nested list is the next item',
+  E.htmlToMd(parseHtml('<ul><li><p>Semantic ID</p><ul><li>a</li><li>b</li></ul><p>Pretraining</p><ul><li>c</li></ul></li></ul>')),
+  '- Semantic ID\n    - a\n    - b\n- Pretraining\n    - c');
+is('paragraphs stacked in one item become items',
+  E.htmlToMd(parseHtml('<ul><li><p>Main</p><p>General approach</p><p>SID</p><ul><li>a</li></ul></li></ul>')),
+  '- Main\n- General approach\n- SID\n    - a');
+is('bare text after a nested list is the next item too',
+  E.htmlToMd(parseHtml('<ul><li>Semantic ID<ul><li>a</li></ul>Pretraining<ul><li>c</li></ul></li></ul>')),
+  '- Semantic ID\n    - a\n- Pretraining\n    - c');
+is('one paragraph wrapping an item is still one item', E.htmlToMd(parseHtml('<ul><li><p>only</p></li></ul>')), '- only');
+is('a line break inside an item is still a space', E.htmlToMd(parseHtml('<ul><li><p>a<br>b</p></li></ul>')), '- a b');
+is('numbering carries on through split items', E.htmlToMd(parseHtml('<ol><li><p>a</p><p>b</p></li><li>c</li></ol>')), '1. a\n2. b\n3. c');
+is('only the first split item keeps the to-do box',
+  E.htmlToMd(parseHtml('<ul><li class="task"><input type="checkbox">do<p>more</p></li></ul>')), '- [ ] do\n- more');
 is('a typed dash is escaped, not read back as a list', E.htmlToMd(parseHtml('<p>- not a list</p>')), '\\- not a list');
 is('the caret parking character never reaches the file', E.htmlToMd(parseHtml('<p>a<strong>b</strong>​c</p>')), 'a**b**c');
 
