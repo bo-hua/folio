@@ -25,7 +25,9 @@ from .brief import render_brief
 from .config import Config
 from .gitinfo import Worktree, match_cwd, repo_snapshot
 from .items import HUMAN_STATUSES, STATUSES, Item, ItemStore
-from .runtime import NEEDS_YOU, UNKNOWN, RuntimeStore, aggregate_attention, effective_state, is_live, iso, utc_now
+from .runtime import (
+    NEEDS_YOU, UNKNOWN, RuntimeStore, aggregate_attention, effective_state, is_live, is_spare, iso, utc_now,
+)
 from .transcript import describe as describe_session
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -172,6 +174,7 @@ class App:
             "is_main_worktree": None,
             "in_repo": False,
             "background": None,
+            "spare": False,
             "resume": resume_plan(sid, None, UNKNOWN),
             "resume_command": resume_command(sid, None),
         }
@@ -187,6 +190,7 @@ class App:
                 cwd=rec.get("cwd"),
                 permission_mode=rec.get("permission_mode"),
                 background=rec.get("background"),
+                spare=is_spare(rec),
                 resume=plan,
                 resume_command=plan["command"],
             )
@@ -194,7 +198,9 @@ class App:
             if wt:
                 view.update(worktree=wt.path, branch=wt.branch, is_main_worktree=wt.is_main, in_repo=True)
         try:
-            meta = describe_session(sid, (rec or {}).get("transcript_path"))
+            # A spare has never been prompted, so it has no transcript to read (and looking
+            # for one is a glob over every Claude project directory, per spare, per request).
+            meta = {} if view["spare"] else describe_session(sid, (rec or {}).get("transcript_path"))
         except Exception:  # noqa: BLE001 -- Claude Code owns this file format; never break the page over it
             meta = {}
         view.update(auto_title=meta.get("title") or "", last_prompt=meta.get("last_prompt") or "")
@@ -263,6 +269,8 @@ class App:
             view = self.session_view({"id": sid, "title": title}, snap)
             if not (view["in_repo"] or include_all or sid in attached):
                 continue
+            if view["spare"] and sid not in attached:
+                continue  # standing by for the next job: counted by spares_view, not a row
             out[sid] = view
         for sid, (iid, title) in attached.items():
             if sid not in out:
@@ -270,6 +278,21 @@ class App:
         for sid, view in out.items():
             view["item"] = attached[sid][0] if sid in attached else None
         return sorted(out.values(), key=lambda v: v.get("updated_at") or "", reverse=True)
+
+    def spares_view(self, snap: Snapshot, include_all: bool = False) -> dict:
+        """Claude Code's pre-started background sessions, counted rather than listed.
+
+        `standing_by` is how many are live right now, waiting for a job to claim
+        them. A retired one (process gone; no SessionEnd ever comes) never became a
+        session at all, so it is neither counted nor listed.
+        """
+        standing_by = 0
+        for rec in snap.runtime.values():
+            if not is_spare(rec) or not is_live(rec, effective_state(rec, snap.now)):
+                continue
+            if include_all or match_cwd(rec.get("cwd"), snap.worktrees):
+                standing_by += 1
+        return {"standing_by": standing_by}
 
     def overview(self, include_all: bool = False) -> dict:
         snap = self.snapshot()
@@ -299,6 +322,7 @@ class App:
             "human_statuses": list(HUMAN_STATUSES),
             "items": list(summaries.values()),
             "sessions": self.sessions_view(snap, include_all),
+            "spares": self.spares_view(snap, include_all),
         }
 
     def item_detail(self, item_id: str) -> dict:
@@ -354,9 +378,16 @@ class App:
             view = self.session_view({"id": rec["session_id"], "title": ""}, snap)
             if not (view["in_repo"] or include_all):
                 continue
+            if view["spare"] and rec["session_id"] not in attached:
+                continue
             view["attached_to"] = attached.get(rec["session_id"], [])
             out.append(view)
-        return {"generated_at": iso(snap.now), "repo": snap.repo, "sessions": out[:limit]}
+        return {
+            "generated_at": iso(snap.now),
+            "repo": snap.repo,
+            "sessions": out[:limit],
+            "spares": self.spares_view(snap, include_all),
+        }
 
     # -------------------------------------------------------------- mutations
     def _get_item(self, item_id: str) -> Item:

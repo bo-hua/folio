@@ -2,7 +2,7 @@ import json
 import threading
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -464,3 +464,52 @@ def test_the_page_says_when_it_last_read_the_sessions(server):
         css = res.read().decode()
     for sel in (".fresh{", ".fresh.paused{", ".fresh.err{", ".fresh .fdot{"):
         assert any(l.startswith(sel) or ("}" + sel) in l for l in css.splitlines()), sel
+
+
+def test_the_spare_session_is_counted_not_listed(server):
+    """Claude Code pre-starts the next background session (`bg claimed-spare … (spare)` in its
+    daemon log): SessionStart fires, no prompt follows, and about an hour later it is retired
+    without a SessionEnd. It used to sit in the rail as an untitled *ready* session, then as
+    an untitled *inactive* one for a week. Now it is a count, and a row only once prompted."""
+    import os
+    call, cfg, repo = server["call"], server["config"], server["repo"]
+    rt = RuntimeStore(cfg.runtime_dir)
+    now = datetime.now(timezone.utc)
+    spare = "74ca22c4-b91f-4362-9c5d-5d6fc42aa44f"
+    rt.record_event({"session_id": spare, "hook_event_name": "SessionStart", "source": "startup", "cwd": str(repo["repo"])},
+                    now=now, process_finder=lambda: (os.getpid(), True))
+    # one retired yesterday (stale, so inactive): never became a session, so it is nothing at all
+    rt.record_event({"session_id": "210a4b49-24ad-42e9-b80b-f51fcd6067bc", "hook_event_name": "SessionStart", "cwd": str(repo["repo"])},
+                    now=now - timedelta(hours=13), process_finder=lambda: (os.getpid(), True))
+    # an interactive session that just opened is a real terminal waiting for you: still listed
+    rt.record_event({"session_id": "i-fresh", "hook_event_name": "SessionStart", "cwd": str(repo["repo"])},
+                    now=now, process_finder=lambda: (os.getpid(), False))
+    # a spare in another repo counts only with ?all=1, like any session
+    rt.record_event({"session_id": "s-spare-elsewhere", "hook_event_name": "SessionStart", "cwd": "/nowhere"},
+                    now=now, process_finder=lambda: (os.getpid(), True))
+
+    status, ov = call("GET", "/api/overview")
+    assert status == 200
+    assert [s["id"] for s in ov["sessions"]] == ["i-fresh"]
+    assert ov["sessions"][0]["state"] == "ready" and ov["sessions"][0]["spare"] is False
+    assert ov["spares"] == {"standing_by": 1}
+    assert call("GET", "/api/overview?all=1")[1]["spares"] == {"standing_by": 2}
+    status, recent = call("GET", "/api/sessions")
+    assert status == 200 and [s["id"] for s in recent["sessions"]] == ["i-fresh"] and recent["spares"] == {"standing_by": 1}
+
+    # a job claims the spare: its first prompt makes it a session like any other
+    rt.record_event({"session_id": spare, "hook_event_name": "UserPromptSubmit", "prompt": "work on task", "cwd": str(repo["repo"])}, now=now)
+    status, ov = call("GET", "/api/overview")
+    sess = next(s for s in ov["sessions"] if s["id"] == spare)
+    assert sess["state"] == "working" and sess["spare"] is False and sess["background"] is True
+    assert ov["spares"] == {"standing_by": 0}
+
+    # the rail shows the count as one quiet line, not a row, and the page carries the style
+    with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
+        assert res.status == 200
+        js = res.read().decode()
+    assert "SPARES = OV.spares" in js and "class: 'rail-spare'" in js and "standing by for the next job" in js
+    with urllib.request.urlopen(server["url"] + "/static/style.css", timeout=10) as res:
+        assert res.status == 200 and res.headers["Content-Type"].startswith("text/css")
+        css = res.read().decode()
+    assert any(l.startswith(".rail-spare{") for l in css.splitlines())

@@ -27,6 +27,27 @@ Claude Code 2.1.x hook events:
 | `SessionEnd` | ended |
 | no events for 12 h, or the recorded `pid` is gone | inactive (derived) |
 | main agent idle but a subagent still running | working (derived) |
+| a *background* session whose only event so far is `SessionStart` | a **spare** (see below): counted, not listed |
+
+## The spare session
+
+The daemon behind `claude --bg` and `claude agents` keeps the *next* background
+session started ahead of time so a new job opens instantly. Its log reads
+`bg claimed-spare <id> (spare)`, then — an hour idle later — `bg retire <id>:
+stale-spare`. Claiming fires `SessionStart`; nothing else ever follows, and
+retirement sends no `SessionEnd`. To the hook that is a background session in
+**ready** with no prompt, no title and no transcript on disk, which the rail used
+to show as `Untitled · <id>` under *Ready* for an hour and under *Ended / inactive*
+for the week after.
+
+`runtime.is_spare()` recognises it from the record alone — background, and the
+only main-thread event seen is the start — and the server keeps it out of
+`sessions` in both `/api/overview` and `/api/sessions`. The live ones are counted
+instead (`spares.standing_by`), which the rail shows as one quiet line at the
+bottom: *1 spare session standing by for the next job*. The moment a job claims the
+spare its first `UserPromptSubmit` arrives and it is listed like any other session,
+same id and all. A spare you attached to a card by hand stays listed, as attached
+sessions always do.
 
 ## Subagents
 
