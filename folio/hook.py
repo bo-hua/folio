@@ -69,10 +69,11 @@ def attach_from_prompt(event: dict, items_dir: Path) -> Item | None:
     it. This does what the inspector's *attach* does, from the prompt alone: the
     card gains the session id in its Markdown, and an *idea* becomes *active*.
 
-    The id is the only thing read out of the prompt. A session that already
-    belongs to a card is never moved -- pasting a second card's brief for
-    reference must not steal the session from the first -- and prompts from
-    inside a subagent are not yours, so they are ignored.
+    The id is the only thing read out of the prompt. Attaching adds and never
+    removes: a session may sit on several cards (the survey and the prototype it
+    led to), so a second card's brief pasted later puts the session on that card
+    too and leaves the first alone. Prompts from inside a subagent are not
+    yours, so they are ignored.
     """
     if event.get("hook_event_name") != "UserPromptSubmit" or event.get("agent_id"):
         return None
@@ -82,11 +83,8 @@ def attach_from_prompt(event: dict, items_dir: Path) -> Item | None:
     if not card_id or not _SAFE_ID.match(session_id):
         return None
     store = ItemStore(items_dir)
-    items = store.list_items()
-    if any(session_id in it.session_ids() for it in items):
-        return None
-    item = next((it for it in items if it.id == card_id), None)
-    if item is None:
+    item = store.get(card_id)
+    if item is None or session_id in item.session_ids():
         return None
     return store.attach_session(item, session_id)
 

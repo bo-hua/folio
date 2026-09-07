@@ -67,7 +67,7 @@ def test_prompt_with_brief_attaches_session_and_stores_no_prompt(tmp_path):
     assert rec["state"] == "working"
 
 
-def test_attach_is_idempotent_and_never_moves_a_session(tmp_path):
+def test_attach_is_idempotent_and_adds_a_second_card_without_leaving_the_first(tmp_path):
     store = ItemStore(tmp_path / "items")
     a = store.create("A", "Folio")
     b = store.create("B", "Folio")
@@ -78,13 +78,13 @@ def test_attach_is_idempotent_and_never_moves_a_session(tmp_path):
     hook.run(ev, tmp_path)  # the same brief again: nothing rewritten
     assert store.get(a.id).session_ids() == [SID]
     assert os.stat(store.get(a.id).path).st_mtime_ns == mtime
-    # B's brief pasted into a session that already belongs to A: A keeps it
-    hook.run(json.dumps(prompt_event("compare with this one:\n" + brief_of(store, b))), tmp_path)
+    # B's brief pasted into the same session later: the session sits on both cards now
+    hook.run(json.dumps(prompt_event("also look at this one:\n" + brief_of(store, b))), tmp_path)
     assert store.get(a.id).session_ids() == [SID]
-    assert store.get(b.id).session_ids() == []
-    # a different, unattached session pasting B's brief lands on B
+    assert store.get(b.id).session_ids() == [SID]
+    # another session pasting B's brief joins B alongside, and A is untouched
     hook.run(json.dumps(prompt_event(brief_of(store, b), sid="second-session")), tmp_path)
-    assert store.get(b.id).session_ids() == ["second-session"]
+    assert store.get(b.id).session_ids() == [SID, "second-session"]
     assert store.get(a.id).session_ids() == [SID]
 
 

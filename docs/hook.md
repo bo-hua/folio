@@ -26,10 +26,10 @@ inspector's *attach*: the session id lands in the card's Markdown, and an *idea*
 becomes *active* on the board. Nothing else is read out of the prompt, and the
 prompt itself is still never stored.
 
-A session that already belongs to a card is never moved: pasting a second card's
-brief for reference must not steal the session from the first. Move it by hand in
-the inspector if that is what you meant. Prompts from inside a subagent are
-ignored, as is a brief whose card no longer exists.
+Attaching adds and never removes. A session may sit on several cards, so a second
+card's brief pasted later puts the session on that card too and leaves the first
+alone; detach it in the inspector if you only meant to quote the card. Prompts from
+inside a subagent are ignored, as is a brief whose card no longer exists.
 
 ## Event → state
 
