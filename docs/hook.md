@@ -7,7 +7,7 @@ never approve, deny, block or otherwise alter a permission decision.
 ## What is stored
 
 Per session, in `runtime/sessions/<id>.json`: `session_id`, `state` (working /
-needs_you / ready / ended), `attention` (permission / question), `last_event`,
+needs_you / ready / ended), `attention` (permission / question / review), `last_event`,
 `updated_at`, `first_seen`, `cwd`, `transcript_path`, `permission_mode`,
 best-effort `pid`, and `main_event_at` / `agent_event_at` (which side of the
 session we last heard from — see *Subagents* below).
@@ -20,14 +20,53 @@ Claude Code 2.1.x hook events:
 
 | event | state |
 |---|---|
-| `SessionStart`, `Stop`, `Notification/idle_prompt` | ready (waiting for your next prompt) |
+| `SessionStart` (startup, resume, clear) | ready (up; nothing waiting on you) |
 | `UserPromptSubmit`, `Pre/PostToolUse`, `Subagent*`, `*Compact` | working |
 | `PermissionRequest` (any tool) | **needs you** · permission |
 | `PermissionRequest` with `tool_name == AskUserQuestion`, `Notification/elicitation_dialog` | **needs you** · question |
+| `Stop` | **needs you** · review (the turn is over; its output is waiting for you) |
+| `Notification/idle_prompt` | no change — except a session still *working* becomes **needs you** · review (its `Stop` was lost) |
 | `SessionEnd` | ended |
 | no events for 12 h, or the recorded `pid` is gone | inactive (derived) |
-| main agent idle but a subagent still running | working (derived) |
+| main agent finished but a subagent still running | working (derived) |
 | a *background* session whose only event so far is `SessionStart` | a **spare** (see below): counted, not listed |
+
+## Three things need you
+
+A permission prompt and a question block the session until you answer. A finished
+turn blocks nothing, but what it produced is sitting there for you — and for a
+background job (`claude --bg`, the job list) that is the *only* sign the job is
+done: nothing else lights up when it writes its `result:` line. It used to go
+quiet instead — `Stop` → ready, the idle notification a minute later → ready, and
+once the daemon retired the idle process → inactive — so a job you started from a
+card finished without the card ever saying so.
+
+So `Stop` is **needs you · review**, and it stays that until the session hears from
+you: your next prompt (→ working), coming back to it (`SessionStart` on a resume →
+ready), or its end. Nothing folio does clears it — marking the card done does not,
+and folio cannot see your terminal — because the record only knows what the hook
+told it. *Ready* is what is left: a session that is up and has nothing waiting on
+you — just started, or resumed to look at.
+
+`Stop` carries Claude's whole reply as `last_assistant_message`. It is what needs
+you, and none of it is kept: the record holds the state and the reason, nothing
+more.
+
+## Hooks run concurrently
+
+Claude Code runs hooks in parallel, and two of them regularly fire for the same
+session within milliseconds: a subagent's `PostToolUse` beside the main thread's
+`Stop`, a `Stop` and the `SessionEnd` behind it, a `PermissionRequest` and its
+`Notification`. Each used to read the record, fold its own event in and write the
+file back, so the second writer silently undid the first — and when both used the
+same temp file the loser crashed in `os.replace`, which is the
+`FileNotFoundError … .json.tmp` line in `runtime/hook-errors.log`. One lost event is
+one lost state: a `Stop` that never lands leaves a finished session *working*.
+
+The read-modify-write now happens under an exclusive `flock` on
+`runtime/sessions/.lock` (a few milliseconds, well inside the hook's 10 s budget),
+and each process writes its own temp file. The idle notification's recovery rule
+above is the belt to that brace.
 
 ## The spare session
 
@@ -56,10 +95,12 @@ what the *main* agent is doing, so they never overwrite the stored state.
 
 That alone is not enough. A subagent dispatched into the background outlives the
 turn that spawned it: the main agent stops, emits `Stop`, and the session is stored
-as **ready** while the work you can watch in the terminal is still running. So the
-hook also records *which side of the session spoke last* — `main_event_at` versus
-`agent_event_at` — and a stored `ready` whose newest event came from a subagent is
-reported as **working**.
+as a finished turn (**needs you · review**) while the work you can watch in the
+terminal is still running — and there is nothing to read yet. So the hook also
+records *which side of the session spoke last* — `main_event_at` versus
+`agent_event_at` — and a stored finished turn (or a plain `ready`) whose newest
+event came from a subagent is reported as **working**. A permission prompt or a
+question is never overridden this way: those block until you answer.
 
 The comparison is deliberately a comparison and not a timeout: a subagent that
 spends ten minutes inside one query stays working for all ten, and the instant the

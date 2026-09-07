@@ -64,6 +64,14 @@ def test_hook_cli_is_a_silent_observer(tmp_path):
     rec = json.loads((tmp_path / "runtime" / "sessions" / "abc-123.json").read_text())
     assert rec["state"] == "needs_you" and rec["attention"] == "permission" and rec["cwd"] == "/somewhere"
     assert "SENSITIVE" not in (tmp_path / "runtime" / "sessions" / "abc-123.json").read_text()
+    # the end of a turn carries Claude's whole reply (`last_assistant_message`): it is what needs
+    # you now, and none of it is kept
+    proc = run_hook(tmp_path, json.dumps({"session_id": "abc-123", "hook_event_name": "Stop", "cwd": "/somewhere",
+                                          "last_assistant_message": "result: SENSITIVE REPORT"}))
+    assert proc.returncode == 0 and proc.stdout == ""
+    rec = json.loads((tmp_path / "runtime" / "sessions" / "abc-123.json").read_text())
+    assert rec["state"] == "needs_you" and rec["attention"] == "review"
+    assert "SENSITIVE" not in (tmp_path / "runtime" / "sessions" / "abc-123.json").read_text()
     # garbage input never fails
     proc = run_hook(tmp_path, "not json")
     assert proc.returncode == 0 and proc.stdout == ""

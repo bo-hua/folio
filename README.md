@@ -88,6 +88,11 @@ parked* is what **you** decided; *needs you / working / ready / ended* is what
 **Claude** is doing. "I parked this" and "a session on it is asking for permission"
 are different facts.
 
+Three things need you: a permission prompt, a question, and a finished turn whose
+output you have not looked at yet — *needs you · review*. That last one is how a
+background job tells you it is done; it clears when you prompt the session again,
+resume it, or it ends.
+
 ## It observes. It never drives.
 
 Claude Code pipes the hook one JSON event on stdin. It records coarse metadata,
