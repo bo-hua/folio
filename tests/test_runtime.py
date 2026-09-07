@@ -27,10 +27,17 @@ def test_transition_table():
     assert transition(ev("PostToolUse", tool_name="Bash")) == (WORKING, None)
     assert transition(ev("PermissionRequest", tool_name="Bash")) == (NEEDS_YOU, "permission")
     assert transition(ev("PermissionRequest", tool_name="AskUserQuestion")) == (NEEDS_YOU, "question")
-    assert transition(ev("Notification", notification_type="idle_prompt")) == (READY, None)
     assert transition(ev("Notification", notification_type="permission_prompt")) == (NEEDS_YOU, "permission")
     assert transition(ev("Notification", notification_type="auth_success")) is None
-    assert transition(ev("Stop")) == (READY, None)
+    # the turn is over: whatever it produced is waiting for you
+    assert transition(ev("Stop")) == (NEEDS_YOU, "review")
+    # the idle notification a minute later adds nothing to that -- unless the Stop never
+    # landed (still "working"), in which case it is the finished turn's only witness
+    assert transition(ev("Notification", notification_type="idle_prompt"), prior=NEEDS_YOU) is None
+    assert transition(ev("Notification", notification_type="idle_prompt"), prior=READY) is None
+    assert transition(ev("Notification", notification_type="idle_prompt"), prior=WORKING) == (NEEDS_YOU, "review")
+    assert transition(ev("Notification", notification_type="idle_prompt")) == (READY, None)  # no history: just "up"
+    assert transition(ev("Notification", notification_type="idle_prompt"), prior="unknown") == (READY, None)
     assert transition(ev("SessionEnd", reason="exit")) == (ENDED, None)
     assert transition(ev("SubagentStart", agent_id="a1", agent_type="Explore")) == (WORKING, None)
     assert transition(ev("PreToolUse", agent_id="a1", agent_type="Explore")) is None  # inside a subagent: keep main state
@@ -61,7 +68,7 @@ def test_record_event_sequence_and_metadata_only(tmp_path):
     rec = store.get(SID)
     assert rec["state"] == NEEDS_YOU and rec["updated_at"] == "2026-08-29T17:00:10Z"
     store.record_event(ev("Stop"), now=t0 + timedelta(seconds=20))
-    assert store.get(SID)["state"] == READY
+    assert (store.get(SID)["state"], store.get(SID)["attention"]) == (NEEDS_YOU, "review")
     store.record_event(ev("SessionEnd"), now=t0 + timedelta(seconds=30))
     rec = store.get(SID)
     assert rec["state"] == ENDED and rec["ended_at"] == "2026-08-29T17:00:30Z"
@@ -141,6 +148,14 @@ def test_background_subagent_keeps_the_session_working_after_the_main_agent_stop
 
     # a session that never spawned one is unaffected
     assert subagent_busy({"state": READY, "main_event_at": iso_at(t0, 25)}) is False
+    # the same for the real shape of a finished turn, needs you · review: while the subagent
+    # it dispatched is still going there is nothing to read yet, so it is working...
+    review = {"state": NEEDS_YOU, "attention": "review", "updated_at": iso_at(t0, 8), "main_event_at": iso_at(t0, 0),
+              "agent_event_at": iso_at(t0, 8)}
+    assert effective_state(review, t0 + timedelta(seconds=30)) == WORKING
+    # ...but a permission prompt or a question raised anywhere blocks you now, subagent or not
+    for reason in ("permission", "question"):
+        assert effective_state({**review, "attention": reason}, t0 + timedelta(seconds=30)) == NEEDS_YOU
     # ended and inactive still win over a chatty subagent
     ended = {"state": ENDED, "updated_at": iso_at(t0, 8), "agent_event_at": iso_at(t0, 8)}
     assert effective_state(ended, t0 + timedelta(seconds=30)) == ENDED
@@ -155,15 +170,15 @@ def test_record_event_tracks_which_side_of_the_session_spoke(tmp_path):
     store.record_event(ev("PostToolUse", agent_id="agent-adc68b7f45dd523d9"), now=t0 + timedelta(seconds=8))
     rec = store.get(SID)
     # exactly the contradictory record observed on the devbox: a fresh PostToolUse
-    # that left the stored state at "ready" -- now recovered as working
-    assert (rec["state"], rec["last_event"]) == (READY, "PostToolUse")
+    # that left the stored state at the main thread's finished turn -- recovered as working
+    assert (rec["state"], rec["attention"], rec["last_event"]) == (NEEDS_YOU, "review", "PostToolUse")
     assert rec["main_event_at"] == iso_at(t0, 0) and rec["agent_event_at"] == iso_at(t0, 8)
     assert effective_state(rec, t0 + timedelta(seconds=20)) == WORKING
 
     store.record_event(ev("Stop"), now=t0 + timedelta(seconds=30))
     rec = store.get(SID)
     assert rec["main_event_at"] == iso_at(t0, 30)
-    assert effective_state(rec, t0 + timedelta(seconds=40)) == READY
+    assert effective_state(rec, t0 + timedelta(seconds=40)) == NEEDS_YOU  # the result is in: read it
 
 
 def test_subagent_and_main_events_inside_the_same_second_are_still_ordered(tmp_path):
@@ -181,6 +196,90 @@ def test_subagent_and_main_events_inside_the_same_second_are_still_ordered(tmp_p
     # and the other way round: the main thread spoke last, so ready means ready
     store.record_event(ev("Stop"), now=t0 + timedelta(microseconds=600_000))
     assert subagent_busy(store.get(SID)) is False
+
+
+def test_a_finished_turn_needs_you_until_you_come_back_to_it(tmp_path):
+    """The card: "if the session is finished and output something for me to review, it
+    should also be needs you". A background job that ends with `result: ...` used to go
+    quiet -- Stop -> ready, idle_prompt -> ready, and once the daemon retired the process,
+    inactive -- so the board never said the job was done. Now the finished turn is
+    needs you · review until the session hears from you."""
+    store = RuntimeStore(tmp_path / "runtime")
+    t0 = datetime(2026, 9, 4, 6, 49, tzinfo=timezone.utc)
+    alive = lambda pid: True  # noqa: E731
+    store.record_event(ev("SessionStart", source="startup"), now=t0, process_finder=lambda: (4242, True))
+    store.record_event(ev("UserPromptSubmit", prompt="work on task"), now=t0 + timedelta(seconds=1))
+    store.record_event(ev("PostToolUse", tool_name="Bash"), now=t0 + timedelta(seconds=30))
+    store.record_event(ev("Stop"), now=t0 + timedelta(seconds=37))  # `result:` written; the job is done
+    rec = store.get(SID)
+    assert (rec["state"], rec["attention"]) == (NEEDS_YOU, "review")
+    assert effective_state(rec, t0 + timedelta(seconds=40), alive=alive) == NEEDS_YOU
+    # a minute later Claude Code says it is idle: still yours to read, not "ready"
+    store.record_event(ev("Notification", notification_type="idle_prompt"), now=t0 + timedelta(seconds=97))
+    rec = store.get(SID)
+    assert (rec["state"], rec["attention"], rec["last_event"]) == (NEEDS_YOU, "review", "Notification")
+    # you answer: working again, and the review is over
+    store.record_event(ev("UserPromptSubmit", prompt="merge"), now=t0 + timedelta(minutes=5))
+    assert (store.get(SID)["state"], store.get(SID)["attention"]) == (WORKING, None)
+    store.record_event(ev("Stop"), now=t0 + timedelta(minutes=6))
+    assert store.get(SID)["attention"] == "review"
+    # coming back to the session to look at it (a resume) clears it too: ready is "up, nothing waiting"
+    store.record_event(ev("SessionStart", source="resume"), now=t0 + timedelta(minutes=7), process_finder=lambda: (5150, False))
+    assert (store.get(SID)["state"], store.get(SID)["attention"]) == (READY, None)
+    store.record_event(ev("Notification", notification_type="idle_prompt"), now=t0 + timedelta(minutes=8))
+    assert store.get(SID)["state"] == READY  # nothing to recover; idle after a resume stays ready
+    # and the end of the session ends the review with it -- there is nothing left to open
+    store.record_event(ev("Stop"), now=t0 + timedelta(minutes=9))
+    store.record_event(ev("SessionEnd", reason="exit"), now=t0 + timedelta(minutes=10))
+    assert store.get(SID)["state"] == ENDED
+    # a process that is gone reads inactive, review or not (the daemon retires idle jobs)
+    gone = {"state": NEEDS_YOU, "attention": "review", "updated_at": iso(t0), "pid": 4242}
+    assert effective_state(gone, t0 + timedelta(minutes=1), alive=lambda pid: False) == INACTIVE
+
+
+def test_the_idle_notification_recovers_a_stop_that_never_landed(tmp_path):
+    """Hooks run concurrently and a lost Stop leaves a finished session "working" for good.
+    The idle notification a minute later is the only other witness to the finished turn."""
+    store = RuntimeStore(tmp_path / "runtime")
+    t0 = datetime(2026, 9, 4, 6, 49, tzinfo=timezone.utc)
+    store.record_event(ev("UserPromptSubmit", prompt="go"), now=t0)
+    store.record_event(ev("PostToolUse", tool_name="Bash"), now=t0 + timedelta(seconds=5))
+    # (no Stop)
+    store.record_event(ev("Notification", notification_type="idle_prompt"), now=t0 + timedelta(seconds=70))
+    assert (store.get(SID)["state"], store.get(SID)["attention"]) == (NEEDS_YOU, "review")
+    # a permission prompt is never downgraded by it: that is still the thing to answer
+    store.record_event(ev("PermissionRequest", tool_name="Bash"), now=t0 + timedelta(seconds=80))
+    store.record_event(ev("Notification", notification_type="idle_prompt"), now=t0 + timedelta(seconds=140))
+    assert (store.get(SID)["state"], store.get(SID)["attention"]) == (NEEDS_YOU, "permission")
+
+
+def test_concurrent_hooks_for_one_session_take_turns(tmp_path):
+    """Two hook processes fired by the same turn -- a subagent's PostToolUse beside the main
+    thread's Stop, a Stop and the SessionEnd behind it -- each read the record, folded their
+    own event in and wrote it back: the second write undid the first, and when both used the
+    same temp file the loser crashed in os.replace (hook-errors.log: FileNotFoundError
+    '...json.tmp'). One lost Stop is a finished session that stays "working". The
+    read-modify-write now happens under the store's lock."""
+    import fcntl
+    import threading
+
+    store = RuntimeStore(tmp_path / "runtime")
+    store.record_event(ev("UserPromptSubmit", prompt="go"))
+    # the test plays the hook that is mid-write and holds the lock
+    holder = open(store.sessions_dir / ".lock", "a")
+    fcntl.flock(holder, fcntl.LOCK_EX)
+    done = threading.Event()
+    worker = threading.Thread(target=lambda: (store.record_event(ev("Stop")), done.set()))
+    worker.start()
+    assert not done.wait(0.3)  # waiting its turn rather than writing over the other hook
+    assert store.get(SID)["state"] == WORKING
+    fcntl.flock(holder, fcntl.LOCK_UN)
+    assert done.wait(5)
+    worker.join()
+    holder.close()
+    assert (store.get(SID)["state"], store.get(SID)["attention"]) == (NEEDS_YOU, "review")
+    # the temp file is per process too, so even two unlocked writers cannot trip over one name
+    assert not list(store.sessions_dir.glob("*.tmp"))
 
 
 def test_a_spare_is_a_background_session_nobody_has_prompted_yet(tmp_path):

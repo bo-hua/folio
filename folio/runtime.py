@@ -14,14 +14,20 @@ from __future__ import annotations
 import json
 import os
 import re
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
+
+try:
+    import fcntl
+except ImportError:  # not POSIX: the hook still records, just without the lock below
+    fcntl = None  # type: ignore[assignment]
 
 # Coarse states, in priority order for attention aggregation.
-NEEDS_YOU = "needs_you"
+NEEDS_YOU = "needs_you"  # attention: permission | question | review (a finished turn you have not looked at)
 WORKING = "working"
-READY = "ready"  # turn completed; waiting for your next prompt
+READY = "ready"  # up, and nothing is waiting on you: just started, or resumed to look
 ENDED = "ended"  # graceful SessionEnd
 INACTIVE = "inactive"  # derived: stale or process gone
 UNKNOWN = "unknown"  # derived: never observed by the hook
@@ -67,12 +73,23 @@ def parse_iso(value: str | None) -> datetime | None:
         return None
 
 
-def transition(event: dict) -> tuple[str, str | None] | None:
+def transition(event: dict, prior: str | None = None) -> tuple[str, str | None] | None:
     """Map one Claude Code hook event to (state, attention_reason).
 
     Returns None when the event carries no state information for the main
     session (e.g. tool events emitted from inside a subagent) -- the record's
     `updated_at` is still touched in that case.
+
+    `prior` is the state stored so far; only the idle notification reads it.
+
+    Three things need you. A permission prompt and a question block the session
+    until you answer. A finished turn does not block anything, but its output is
+    sitting there for you -- and for a background job that is the *only* signal
+    the job is done, since nothing else lights up when it finishes. So `Stop` is
+    **needs you · review** and stays so until the session hears from you again:
+    your next prompt (-> working), coming back to it (`SessionStart` on a resume
+    -> ready), or its end. *Ready* is what is left: a session that is up and has
+    nothing waiting on you.
     """
     name = event.get("hook_event_name")
     # Attention first, and *before* the subagent guard below: a permission prompt
@@ -88,7 +105,14 @@ def transition(event: dict) -> tuple[str, str | None] | None:
         if kind == "elicitation_dialog":
             return NEEDS_YOU, "question"
         if kind == "idle_prompt" and not event.get("agent_id"):
-            return READY, None
+            # Claude has been sitting at the prompt for a minute after finishing a turn.
+            # Normally `Stop` already said so and this changes nothing -- a review stays a
+            # review, a permission prompt stays one. Still *working* means the Stop was
+            # lost (hooks run concurrently), so recover the finished turn from this. With
+            # no history at all it can only say the session is up.
+            if prior == WORKING:
+                return NEEDS_YOU, "review"
+            return (READY, None) if prior in (None, UNKNOWN) else None
         return None
     if name in ("SubagentStart", "SubagentStop"):
         return WORKING, None
@@ -104,7 +128,8 @@ def transition(event: dict) -> tuple[str, str | None] | None:
     if name in _WORKING_EVENTS:
         return WORKING, None
     if name == "Stop":
-        return READY, None
+        # The turn is over and whatever it produced is waiting for you (see above).
+        return NEEDS_YOU, "review"
     if name == "SessionEnd":
         return ENDED, None
     return None
@@ -178,9 +203,12 @@ def effective_state(record: dict, now: datetime | None = None, alive: Callable[[
     updated = parse_iso(record.get("updated_at"))
     if updated is None or now - updated > STALE_AFTER:
         return INACTIVE
-    if state == READY and subagent_busy(record):
+    finished = state == READY or (state == NEEDS_YOU and record.get("attention") == "review")
+    if finished and subagent_busy(record):
         # The main agent finished its turn but handed work to a subagent that is
-        # still running -- what you see in the terminal is work, not a prompt.
+        # still running -- what you see in the terminal is work, not a prompt, and
+        # not a result to read yet either. A permission prompt or a question is
+        # never overridden this way: those block until you answer.
         return WORKING
     return state
 
@@ -204,6 +232,32 @@ class RuntimeStore:
 
     def _path(self, session_id: str) -> Path:
         return self.sessions_dir / f"{session_id}.json"
+
+    @contextmanager
+    def locked(self) -> Iterator[None]:
+        """Hold the store's write lock for one read-modify-write of a record.
+
+        Claude Code runs hooks concurrently, and two of them regularly fire for the
+        same session within milliseconds: a subagent's PostToolUse beside the main
+        thread's Stop, a Stop and the SessionEnd behind it, PermissionRequest and its
+        Notification. Each one read the record, folded its own event in and wrote the
+        file back -- so the second writer silently undid the first, and when both used
+        the same temp file the loser crashed in os.replace (the FileNotFoundError lines
+        in hook-errors.log). One event lost is one state lost: a Stop that never lands
+        leaves a finished session "working". An exclusive flock on a sidecar file
+        serialises them; the critical section is a few milliseconds, well inside the
+        hook's 10 s budget.
+        """
+        if fcntl is None:
+            yield
+            return
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        with open(self.sessions_dir / ".lock", "a", encoding="utf-8") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
 
     def get(self, session_id: str) -> dict | None:
         if not _SAFE_ID.match(session_id or ""):
@@ -236,6 +290,10 @@ class RuntimeStore:
         if not _SAFE_ID.match(session_id):
             return None
         now = now or utc_now()
+        with self.locked():
+            return self._fold(session_id, event, now, process_finder)
+
+    def _fold(self, session_id: str, event: dict, now: datetime, process_finder) -> dict:
         record = self.get(session_id) or {
             "session_id": session_id,
             "state": UNKNOWN,
@@ -251,7 +309,7 @@ class RuntimeStore:
             "main_event_at": None,
             "agent_event_at": None,
         }
-        result = transition(event)
+        result = transition(event, record.get("state"))
         if result is not None:
             record["state"], record["attention"] = result
         record["last_event"] = event.get("hook_event_name")
@@ -278,7 +336,9 @@ class RuntimeStore:
             except Exception:  # never let process discovery break the hook
                 pass
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
-        tmp = self._path(session_id).with_suffix(".json.tmp")
+        # The lock makes sharing a temp file safe; naming it per process makes it safe
+        # even without one (see `locked`).
+        tmp = self.sessions_dir / f"{session_id}.json.{os.getpid()}.tmp"
         tmp.write_text(json.dumps(record, indent=1, sort_keys=True), encoding="utf-8")
         os.replace(tmp, self._path(session_id))
         return record

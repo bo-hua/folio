@@ -147,7 +147,8 @@ def test_overview_carries_lifecycle_order_and_sessions(server):
     assert by[k["id"]]["lifecycle"] == "active" and by[p["id"]]["lifecycle"] == "active" and by[p["id"]]["status"] == "active"
     sess = {s["id"]: s for s in ov["sessions"]}
     assert sess["s-work"]["item"] == k["id"] and sess["s-work"]["title"] == "Impl" and sess["s-work"]["state"] == "working"
-    assert sess["s-idle"]["item"] is None and sess["s-idle"]["state"] == "ready"
+    # a session whose turn is over has output waiting for you: needs you, for a review
+    assert sess["s-idle"]["item"] is None and sess["s-idle"]["state"] == "needs_you" and sess["s-idle"]["attention"] == "review"
     # an attached session the hook never saw is still listed (state unknown) so the card can show it
     call("POST", f"/api/items/{p['id']}/sessions", {"session_id": "s-manual"})
     _, ov = call("GET", "/api/overview")

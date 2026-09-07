@@ -109,6 +109,9 @@ def test_end_to_end_flow(server):
     status, detail = call("GET", f"/api/items/{parent['id']}")
     bg = next(s for s in detail["sessions"] if s["short_id"] == "b1234567")
     assert bg["background"] is True and bg["resume"]["kind"] == "attach" and bg["resume_command"] == "claude attach b1234567"
+    # a job whose turn is over is the case the board exists for: its output is waiting for you
+    assert bg["state"] == "needs_you" and bg["attention"] == "review"
+    assert detail["attention"]["level"] == "needs_you" and detail["attention"]["needs_you"] == 1
     # a live *interactive* session still gets --resume but with a warning note
     rt.record_event({"session_id": "i1234567-aaaa-bbbb-cccc-dddddddddddd", "hook_event_name": "Stop", "cwd": str(repo["repo"])},
                     now=now, process_finder=lambda: (os.getpid(), False))
