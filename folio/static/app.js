@@ -924,6 +924,21 @@ $('#inspector').addEventListener('change', e => {
   }
 });
 $('#inspector').addEventListener('keydown', e => { if (e.target.dataset.act === 'rename' && e.key === 'Enter') { e.preventDefault(); e.target.blur(); } if (e.key === 'Escape') e.target.blur(); });
+// A paste into the title lands as one line with nothing after it. What you copy usually ends in a
+// newline -- a line from a terminal, a heading from a doc -- and pasted as-is it opened a blank second
+// row under the title, with the caret sitting on it, until the blur trimmed the name. So the pasted
+// text is folded onto one line, its trailing whitespace dropped, and its leading run too when it lands
+// at the very start (no title begins with a space). Inserted through execCommand so ⌘Z still takes
+// the paste back; a browser without it gets the plain replacement.
+function titlePaste(text, atStart) { const t = text.replace(/\s+/g, ' ').trimEnd(); return atStart ? t.trimStart() : t; }
+$('#inspector').addEventListener('paste', e => {
+  const t = e.target; if (t.dataset.act !== 'rename' || !e.clipboardData) return;
+  const text = titlePaste(e.clipboardData.getData('text/plain'), t.selectionStart === 0);
+  e.preventDefault();
+  if (!text && t.selectionStart === t.selectionEnd) return;   // nothing but whitespace, and nothing selected to replace: no-op
+  if (text ? document.execCommand('insertText', false, text) : document.execCommand('delete')) return;
+  t.setRangeText(text, t.selectionStart, t.selectionEnd, 'end'); t.dispatchEvent(new Event('input', { bubbles: true }));
+});
 $('#inspector').addEventListener('submit', e => {
   e.preventDefault(); const c = cardById(state.selected); if (!c) return;
   if (e.target.dataset.act === 'add-kid-form') { const name = e.target.querySelector('input').value.trim(); if (!name) return; mutate(() => api('POST', '/api/items', { name, parent: c.id }), { msg: `Added “${name}” inside “${c.name}”` }).then(() => collapsed.delete(c.id)); }
