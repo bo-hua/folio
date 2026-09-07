@@ -7,12 +7,16 @@ Area  (a directory)
         └── 0..N Claude Code sessions (ids + human titles; live state joined at runtime)
 ```
 
+A session is not owned by one Item: the same session id may appear on several —
+the survey card and the prototype it led to, a parent and the child it is really
+working on. Each Item lists the sessions on it; the board joins them back up.
+
 | | what it is | where it lives |
 |---|---|---|
 | **Area** | a bucket — a project, a theme, an `Inbox` | a directory under `items/` |
 | **Item** | one piece of work; the durable unit | one `.md` file with YAML frontmatter |
 | **Child item** | a sub-problem or spin-off | an Item whose frontmatter has `parent: <id>` |
-| **Session** | a Claude Code session attached to an Item | an id + title in the Item's frontmatter |
+| **Session** | a Claude Code session attached to an Item (the same session can be on several) | an id + title in each Item's frontmatter |
 | **Status** | *derived* idea / active, or the two states a person sets: done / parked (+ optional `park_note`) | frontmatter `status:` |
 | **Runtime state** | *machine* state: working / needs you / ready / ended / inactive | derived from the hook, never written to Markdown |
 

@@ -28,11 +28,11 @@ PRELUDE = """'use strict';
 const spec = %s;
 let VISIBLE = null;
 const state = { focus: spec.focus, selected: spec.selected || null };
-const CARDS = spec.cards, SESSIONS = spec.sessions || [];
+// a session can sit on several cards: `items` is the list; a spec may still say `item` for one
+const CARDS = spec.cards, SESSIONS = (spec.sessions || []).map(s => ({ ...s, items: s.items || (s.item ? [s.item] : []) }));
 const cardById = id => CARDS.find(c => c.id === id);
 const kidsOf = id => CARDS.filter(c => c.parent === id);
 const topOf = a => CARDS.filter(c => !c.parent && c.area === a.id);
-const sessOf = id => SESSIONS.filter(s => s.item === id);
 const lifecycle = c => c.lifecycle || 'idea';
 function ancestors(id) { const out = []; let c = cardById(id); while (c && c.parent) { out.unshift(c.parent); c = cardById(c.parent); } return out; }
 """
@@ -50,6 +50,7 @@ def run(tmp_path, cards, focus, sessions=None, selected=None):
     script.write_text(
         (PRELUDE % spec)
         + extract("const LIVE_STATES", "const FOCUS_ORDER")
+        + extract("const sessOf =", "const quoteNames =")
         + extract("// --- the focus filter.", "const hiddenCount =")
         + EPILOGUE,
         encoding="utf-8",
@@ -229,3 +230,14 @@ def test_focus_leaves_only_the_rows_on_cards_it_keeps(tmp_path):
 def test_the_open_card_keeps_its_rows_in_the_rail(tmp_path):
     got = run(tmp_path, TREE, "done", sessions=RAIL, selected="c")
     assert "s-c" in got["rail"]
+
+
+@node
+def test_a_row_on_several_cards_stays_while_any_of_them_shows(tmp_path):
+    # a1 and c are hidden by "hide done"; b1 stays. A session on a1 *and* b1 still has a
+    # card on the canvas, so its row stays; one on a1 and c has nowhere left to point.
+    got = run(tmp_path, TREE, "done", sessions=[
+        {"id": "s-split", "items": ["a1", "b1"], "state": "ended"},
+        {"id": "s-gone", "items": ["a1", "c"], "state": "ended"},
+    ])
+    assert got["rail"] == ["s-split"]

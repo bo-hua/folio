@@ -573,3 +573,58 @@ def test_the_spare_session_is_counted_not_listed(server):
         assert res.status == 200 and res.headers["Content-Type"].startswith("text/css")
         css = res.read().decode()
     assert any(l.startswith(".rail-spare{") for l in css.splitlines())
+
+
+def test_a_session_can_sit_on_several_cards(server):
+    """One piece of work spans cards -- the survey and the prototype it led to, a
+    parent and the child it is really about -- so attaching a session to a second
+    card must not pull it off the first. Moving is an explicit ask (`from`, or the
+    old `exclusive`), and a session's title follows it onto every card it is on."""
+    call, cfg, repo = server["call"], server["config"], server["repo"]
+    now = datetime.now(timezone.utc)
+    RuntimeStore(cfg.runtime_dir).record_event(
+        {"session_id": "s-shared", "hook_event_name": "PreToolUse", "tool_name": "Read", "cwd": str(repo["repo"])}, now=now)
+    assert call("POST", "/api/areas", {"name": "Ranking"})[0] == 200
+    survey = call("POST", "/api/items", {"name": "Survey", "area": "Ranking"})[1]
+    proto = call("POST", "/api/items", {"name": "Prototype", "area": "Ranking", "parent": survey["id"]})[1]
+    third = call("POST", "/api/items", {"name": "Write-up", "area": "Ranking"})[1]
+
+    def on():  # every card the session is on, from the sessions endpoint
+        return sorted(i["id"] for i in call("GET", "/api/sessions")[1]["sessions"][0]["attached_to"])
+
+    # attach to two cards: both keep it
+    assert call("POST", f"/api/items/{survey['id']}/sessions", {"session_id": "s-shared", "title": "the sweep"})[0] == 200
+    assert call("POST", f"/api/items/{proto['id']}/sessions", {"session_id": "s-shared", "title": "the sweep"})[0] == 200
+    assert call("GET", f"/api/items/{survey['id']}")[1]["sessions"][0]["id"] == "s-shared"
+    assert call("GET", f"/api/items/{proto['id']}")[1]["sessions"][0]["id"] == "s-shared"
+    ov = call("GET", "/api/overview")[1]
+    row = next(s for s in ov["sessions"] if s["id"] == "s-shared")
+    assert sorted(row["items"]) == sorted([survey["id"], proto["id"]]), "the overview row names every card it is on"
+    assert row["item"] == row["items"][0], "`item` stays as the first, for readers that want one"
+    assert row["title"] == "the sweep"
+    by_id = {i["id"]: i for i in ov["items"]}
+    assert by_id[survey["id"]]["lifecycle"] == by_id[proto["id"]]["lifecycle"] == "active"
+    assert on() == sorted([survey["id"], proto["id"]])
+
+    # the title belongs to the session: renaming on one card renames it on the other
+    assert call("PATCH", f"/api/items/{proto['id']}/sessions/s-shared", {"title": "discounted sweep"})[0] == 200
+    assert call("GET", f"/api/items/{survey['id']}")[1]["sessions"][0]["title"] == "discounted sweep"
+    assert "discounted sweep" in (cfg.items_dir / "Ranking" / "Survey.md").read_text()
+    assert call("PATCH", f"/api/items/{third['id']}/sessions/s-shared", {"title": "x"})[0] == 404  # not on that card
+
+    # detaching from one card leaves the other alone
+    assert call("DELETE", f"/api/items/{proto['id']}/sessions/s-shared")[0] == 200
+    assert call("GET", f"/api/items/{survey['id']}")[1]["sessions"][0]["id"] == "s-shared"
+    assert call("GET", f"/api/items/{proto['id']}")[1]["sessions"] == []
+
+    # a move: `from` leaves that one card and no other
+    assert call("POST", f"/api/items/{proto['id']}/sessions", {"session_id": "s-shared", "title": "discounted sweep"})[0] == 200
+    assert call("POST", f"/api/items/{third['id']}/sessions", {"session_id": "s-shared", "title": "discounted sweep", "from": proto["id"]})[0] == 200
+    assert on() == sorted([survey["id"], third["id"]])
+    # `from` naming a card it was never on is harmless
+    assert call("POST", f"/api/items/{third['id']}/sessions", {"session_id": "s-shared", "from": "nope"})[0] == 200
+    assert on() == sorted([survey["id"], third["id"]])
+
+    # the old opt-in: exclusive leaves every other card
+    assert call("POST", f"/api/items/{proto['id']}/sessions", {"session_id": "s-shared", "exclusive": True})[0] == 200
+    assert on() == [proto["id"]]

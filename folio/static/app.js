@@ -49,8 +49,13 @@ const cardById = id => CARDS.find(c => c.id === id);
 const areaById = id => AREAS.find(a => a.id === id);
 const kidsOf = id => CARDS.filter(c => c.parent === id);
 const topOf = a => CARDS.filter(c => !c.parent && c.area === a.id);
-const sessOf = id => SESSIONS.filter(s => s.item === id);
+// A session can sit on several cards -- one piece of work spans a survey card and the
+// prototype it led to -- so `s.items` is a list, and a card's sessions are the rows that name it.
+const sessOf = id => SESSIONS.filter(s => s.items.includes(id));
 const sessById = id => SESSIONS.find(s => s.id === id);
+const cardsOf = s => s.items.map(cardById).filter(Boolean); // the cards it is on that the page knows about
+const otherCardsOf = (s, except) => cardsOf(s).filter(c => c.id !== except);
+const quoteNames = cs => cs.map(c => `“${c.name}”`).join(', ');
 const parents = () => CARDS.filter(c => isVisible(c) && visKidsOf(c.id).length);
 const lifecycle = c => c.lifecycle || 'idea';
 // What a session is called: your own name for it, else the title Claude Code gave
@@ -87,10 +92,10 @@ function computeVisible() {
   // whatever you have open stays on the canvas, filter or not, with its ancestors
   if (state.selected && cardById(state.selected)) { VISIBLE.add(state.selected); ancestors(state.selected).forEach(id => VISIBLE.add(id)); }
 }
-// A session goes where its card goes: when the filter drops the card, the rail drops
-// its sessions too. An unattached row has no card to follow, so it always stays --
-// and a session that needs you keeps its card visible, so it can never be hidden here.
-const railVisible = s => { const c = s.item && cardById(s.item); return !c || isVisible(c); };
+// A session goes where its cards go: when the filter drops every card it is on, the rail
+// drops the row too. An unattached row has no card to follow, so it always stays --
+// and a session that needs you keeps its cards visible, so it can never be hidden here.
+const railVisible = s => { const cs = cardsOf(s); return !cs.length || cs.some(isVisible); };
 const hiddenCount = () => VISIBLE ? CARDS.length - VISIBLE.size : 0;
 // --- the done fold. Finished work piles up under a long-lived parent, and a card with a dozen
 // done children was a column taller than the rest of the canvas put together. So a long list
@@ -143,7 +148,7 @@ async function load() {
   OV = await api('GET', `/api/overview${state.allRepos ? '?all=1' : ''}`);
   AREAS = OV.areas.map(a => ({ id: a.name, name: a.name, count: a.count }));
   CARDS = OV.items.map(i => ({ id: i.id, name: i.name, area: i.area, parent: i.parent || null, order: i.order, lifecycle: i.lifecycle, human: i.human_status, parkNote: i.park_note || '', hasAi: i.has_ai_state, updated: i.updated }));
-  SESSIONS = OV.sessions.map(s => ({ id: s.id, short: s.short_id, title: s.title || '', autoTitle: s.auto_title || '', prompt: s.last_prompt || '', state: s.state, attention: s.attention, updated: s.updated_at, lastEvent: s.last_event, cwd: s.cwd, branch: s.branch, inRepo: s.in_repo, item: s.item || null, resume: s.resume }));
+  SESSIONS = OV.sessions.map(s => ({ id: s.id, short: s.short_id, title: s.title || '', autoTitle: s.auto_title || '', prompt: s.last_prompt || '', state: s.state, attention: s.attention, updated: s.updated_at, lastEvent: s.last_event, cwd: s.cwd, branch: s.branch, inRepo: s.in_repo, items: s.items || (s.item ? [s.item] : []), resume: s.resume }));
   // Claude Code's pre-started next background session(s): not sessions yet, so the server
   // counts them instead of listing them -- the rail shows one quiet line, never a row.
   SPARES = OV.spares || { standing_by: 0 };
@@ -259,11 +264,14 @@ function showBriefToCopy(c, text) {
 // ------------------------------------------------------------------ derived
 function attn(id) {
   let needs = 0, working = 0, ownNeeds = 0, ownWorking = 0;
-  const walk = (cid, own) => { for (const s of sessOf(cid)) { if (s.state === 'needs_you') { needs++; if (own) ownNeeds++; } else if (s.state === 'working') { working++; if (own) ownWorking++; } } for (const k of kidsOf(cid)) walk(k.id, false); };
+  const seen = new Set(); // a session on both a card and its child is one session, counted once
+  const walk = (cid, own) => { for (const s of sessOf(cid)) { if (seen.has(s.id)) continue; seen.add(s.id); if (s.state === 'needs_you') { needs++; if (own) ownNeeds++; } else if (s.state === 'working') { working++; if (own) ownWorking++; } } for (const k of kidsOf(cid)) walk(k.id, false); };
   walk(id, true);
   return { needs, working, ownNeeds, ownWorking, descNeeds: needs - ownNeeds, descWorking: working - ownWorking };
 }
-function areaAttn(a) { let needs = 0, working = 0; for (const c of topOf(a)) { const x = attn(c.id); needs += x.needs; working += x.working; } return { needs, working }; }
+// Sessions, not cards: a session on two cards in the area is one thing needing you.
+function areaAttn(a) { const inArea = new Set(CARDS.filter(c => c.area === a.id).map(c => c.id)); const ss = SESSIONS.filter(s => s.items.some(id => inArea.has(id))); return { needs: ss.filter(s => s.state === 'needs_you').length, working: ss.filter(s => s.state === 'working').length }; }
+const needsYouCount = () => SESSIONS.filter(s => s.state === 'needs_you' && cardsOf(s).length).length; // attached sessions asking for you
 function needsYouCards() { return CARDS.filter(c => sessOf(c.id).some(s => s.state === 'needs_you')); }
 function lifecycleWhy(c) {
   const n = sessOf(c.id).length, kids = kidsOf(c.id);
@@ -289,7 +297,10 @@ function compStrip(kids) {
   for (const k of ['active', 'idea', 'parked', 'done']) if (counts[k]) strip.appendChild(h('i', { class: `c-${k}`, style: `flex:${counts[k]}` }));
   return strip;
 }
-function sessChip(s) { return h('span', { class: `sess ${s.state}`, 'data-sid': s.id, title: `${sessTitle(s)} — ${STATE_LABEL[s.state] || s.state}${s.attention ? ' · ' + s.attention : ''}${s.prompt ? `\n\nlast prompt: ${s.prompt}` : ''}` }, h('i', { class: `dot ${s.state}` }), sessTitle(s)); }
+function sessChip(s, card) {
+  const also = otherCardsOf(s, card);
+  return h('span', { class: `sess ${s.state}`, 'data-sid': s.id, title: `${sessTitle(s)} — ${STATE_LABEL[s.state] || s.state}${s.attention ? ' · ' + s.attention : ''}${s.prompt ? `\n\nlast prompt: ${s.prompt}` : ''}${also.length ? `\n\nalso on ${quoteNames(also)}` : ''}\n\nDrag to another card to move it there; off the card to detach it from this one.` }, h('i', { class: `dot ${s.state}` }), sessTitle(s));
+}
 function cardEl(c, depth = 0) {
   const kids = visKidsOf(c.id), hiddenKids = kidsOf(c.id).length - kids.length, sess = sessOf(c.id), lc = lifecycle(c), ag = attn(c.id);
   const isCollapsed = kids.length > 0 && collapsed.has(c.id);
@@ -307,7 +318,7 @@ function cardEl(c, depth = 0) {
   el.appendChild(head);
   if (sess.length) {
     const row = h('div', { class: 'card-row' });
-    sess.slice(0, 2).forEach(s => row.appendChild(sessChip(s)));
+    sess.slice(0, 2).forEach(s => row.appendChild(sessChip(s, c.id)));
     if (sess.length > 2) row.appendChild(h('span', { class: 'sess', title: sess.slice(2).map(sessTitle).join('\n') }, `+${sess.length - 2}`));
     el.appendChild(row);
   }
@@ -412,15 +423,15 @@ function renderTopbar() {
   $('#stale').hidden = !(OV && OV.server && OV.server.stale);
 }
 function renderAttnPill() {
-  const list = needsYouCards(), working = SESSIONS.filter(s => s.state === 'working').length, pill = $('#attnPill');
+  const n = needsYouCount(), working = SESSIONS.filter(s => s.state === 'working').length, pill = $('#attnPill');
   pill.innerHTML = '';
-  if (list.length) { pill.append(h('i', { class: 'dot needs_you', style: 'margin-right:7px' }), `${list.length} need${list.length === 1 ? 's' : ''} you`); if (working) pill.append(h('span', { class: 'muted', style: 'margin-left:6px;font-weight:400' }, `· ${working} working`)); pill.style.borderColor = 'var(--attn)'; pill.style.color = 'var(--attn-ink)'; }
+  if (n) { pill.append(h('i', { class: 'dot needs_you', style: 'margin-right:7px' }), `${n} need${n === 1 ? 's' : ''} you`); if (working) pill.append(h('span', { class: 'muted', style: 'margin-left:6px;font-weight:400' }, `· ${working} working`)); pill.style.borderColor = 'var(--attn)'; pill.style.color = 'var(--attn-ink)'; }
   else { pill.append(working ? h('i', { class: 'dot working', style: 'margin-right:7px' }) : '', working ? `${working} working` : 'All quiet'); pill.style.borderColor = ''; pill.style.color = ''; }
 }
 function renderRail() {
   const rail = $('#rail'); rail.innerHTML = '';
   let list = SESSIONS.slice();
-  if (state.railFilter === 'unattached') list = list.filter(s => !s.item);
+  if (state.railFilter === 'unattached') list = list.filter(s => !s.items.length);
   if (state.railFilter === 'attention') list = list.filter(s => s.state === 'needs_you');
   const shown = list.filter(railVisible), hidden = list.length - shown.length; // a row goes wherever its card went
   list = shown;
@@ -430,8 +441,11 @@ function renderRail() {
     const rows = list.filter(s => railState(s) === st); if (!rows.length) continue; any = true;
     const g = h('div', { class: 'rail-group' }, h('h2', {}, h('i', { class: `dot ${st}` }), label, h('span', { class: 'n' }, String(rows.length))));
     for (const s of rows) {
-      const card = s.item ? cardById(s.item) : null;
-      const where = card ? h('span', { class: 'where' }, h('i', { class: `glyph ${lifecycle(card)}` }), card.name) : h('span', { class: 'where none' }, 'unattached · drag onto a card');
+      // one chip per card the session sits on -- click one to go to that card
+      const cards = cardsOf(s);
+      const where = h('div', { class: 'wheres' }, cards.length
+        ? cards.map(card => h('span', { class: 'where', 'data-id': card.id, title: `On “${card.name}” — click to go there` }, h('i', { class: `glyph ${lifecycle(card)}` }), card.name))
+        : h('span', { class: 'where none' }, 'unattached · drag onto a card'));
       g.appendChild(h('div', { class: 'srow', 'data-sid': s.id, tabindex: '0', title: sessTip(s) }, h('i', { class: `dot ${s.state}` }),
         h('div', { style: 'min-width:0' }, h('div', { class: 't' }, sessTitle(s)),
           s.prompt ? h('div', { class: 'p' }, s.prompt) : '',
@@ -492,13 +506,15 @@ function renderInspector() {
   body.appendChild(st);
   // sessions
   const ss = h('div', { class: 'sec' }, h('h3', {}, 'Sessions', h('span', { class: 'n' }, String(sess.length)), h('button', { class: 'act', 'data-act': 'attach-hint' }, 'Attach…')));
-  if (!sess.length) ss.appendChild(h('div', { class: 'muted', style: 'font-size:12px' }, 'None yet. Drag one from the rail, or start Claude in this card’s worktree and attach it here.'));
+  if (!sess.length) ss.appendChild(h('div', { class: 'muted', style: 'font-size:12px' }, 'None yet. Drag one from the rail, or start Claude in this card’s worktree and attach it here. A session can sit on several cards at once.'));
   for (const s of sess) {
+    const also = otherCardsOf(s, c.id); // the same session, on other cards too
     const row = h('div', { class: 'ins-sess' }, h('i', { class: `dot ${s.state}` }),
-      h('div', { style: 'min-width:0' }, h('div', { class: 't' }, h('button', { class: 'link', 'data-act': 'rename-session', 'data-sid': s.id, title: s.title ? 'Click to rename' : 'Named by Claude Code — click to rename' }, sessTitle(s))),
+      h('div', { style: 'min-width:0' }, h('div', { class: 't' }, h('button', { class: 'link', 'data-act': 'rename-session', 'data-sid': s.id, title: (s.title ? 'Click to rename' : 'Named by Claude Code — click to rename') + (also.length ? ' — the name follows the session onto every card it is on' : '') }, sessTitle(s))),
         s.prompt ? h('div', { class: 'p', title: s.prompt }, s.prompt) : '',
-        h('div', { class: 'm' }, h('span', {}, (STATE_LABEL[s.state] || s.state) + (s.attention ? ' · ' + s.attention : '')), s.branch ? h('span', { class: 'mono' }, s.branch) : '', h('span', { class: 'mono', title: s.id }, s.short), h('span', { title: agoTip(s) }, agoText(s.updated)))),
-      h('div', { class: 'acts' }, h('button', { class: `mini ${s.state === 'needs_you' ? 'primary' : ''}`, 'data-act': 'resume', 'data-sid': s.id }, s.resume && s.resume.kind === 'attach' ? 'Attach' : (['ended', 'inactive', 'unknown'].includes(s.state) ? 'Resume' : 'Open')), h('button', { class: 'mini', 'data-act': 'detach', 'data-sid': s.id, title: 'Detach from this card (the Claude session itself is untouched)' }, '×')));
+        h('div', { class: 'm' }, h('span', {}, (STATE_LABEL[s.state] || s.state) + (s.attention ? ' · ' + s.attention : '')), s.branch ? h('span', { class: 'mono' }, s.branch) : '', h('span', { class: 'mono', title: s.id }, s.short), h('span', { title: agoTip(s) }, agoText(s.updated))),
+        also.length ? h('div', { class: 'also' }, 'also on ', ...also.flatMap((o, i) => [i ? ', ' : '', h('button', { class: 'link', 'data-act': 'reveal', 'data-id': o.id, title: `Go to “${o.name}”` }, o.name)])) : ''),
+      h('div', { class: 'acts' }, h('button', { class: `mini ${s.state === 'needs_you' ? 'primary' : ''}`, 'data-act': 'resume', 'data-sid': s.id }, s.resume && s.resume.kind === 'attach' ? 'Attach' : (['ended', 'inactive', 'unknown'].includes(s.state) ? 'Resume' : 'Open')), h('button', { class: 'mini', 'data-act': 'detach', 'data-sid': s.id, title: `Detach from this card (the Claude session itself is untouched${also.length ? `, and it stays on ${quoteNames(also)}` : ''})` }, '×')));
     if (state.resumeOpen === s.id && s.resume) {
       row.appendChild(h('div', { class: 'resume-box' },
         h('div', { class: 'cmd' }, h('code', {}, s.resume.command), h('button', { class: 'mini', onclick: () => copyText(s.resume.command) }, 'Copy')),
@@ -640,18 +656,33 @@ function siblingAfter(c) { const sibs = c.parent ? kidsOf(c.parent) : topOf(area
 function moveSpec(c) { return { parent: c.parent, area: c.parent ? null : c.area, before: siblingAfter(c) }; } // how to put it back
 const moveApi = (id, spec) => api('POST', `/api/items/${encodeURIComponent(id)}/move`, spec);
 function moveCard(c, spec, msg) { const back = moveSpec(c); return mutate(() => moveApi(c.id, spec), { msg, undo: () => moveApi(c.id, back) }).then(() => flashCard(c.id)); }
-const attachApi = (item, s) => api('POST', `/api/items/${encodeURIComponent(item)}/sessions`, { session_id: s.id, title: s.title || '' });
+// A session may sit on several cards. Attaching adds it to one more; `from` names a card
+// to leave at the same time (a move), which the server does in the one request.
+const attachApi = (item, s, from) => api('POST', `/api/items/${encodeURIComponent(item)}/sessions`, { session_id: s.id, title: s.title || '', ...(from ? { from } : {}) });
 const detachApi = (item, sid) => api('DELETE', `/api/items/${encodeURIComponent(item)}/sessions/${encodeURIComponent(sid)}`);
-function attachSession(s, target) {
-  const prev = s.item, tgt = cardById(target);
-  return mutate(() => attachApi(target, s), {
-    msg: prev ? `Moved “${sessTitle(s)}” to “${tgt.name}”` : `Attached “${sessTitle(s)}” to “${tgt.name}” — it’s now active`,
-    undo: () => prev ? attachApi(prev, s) : detachApi(target, s.id),
+const nameOf = id => (cardById(id) || {}).name || 'its card';
+function attachSession(s, target, from = null) {
+  const tgt = cardById(target), also = otherCardsOf(s, target);
+  let msg;
+  if (from) msg = `Moved “${sessTitle(s)}” from “${nameOf(from)}” to “${tgt.name}”`;
+  else if (also.length) msg = `Attached “${sessTitle(s)}” to “${tgt.name}” — it’s on ${quoteNames(also)} too`;
+  else msg = `Attached “${sessTitle(s)}” to “${tgt.name}” — it’s now active`;
+  return mutate(() => attachApi(target, s, from), {
+    msg,
+    undo: () => from ? attachApi(from, s, target) : detachApi(target, s.id),
   }).then(() => flashCard(target));
 }
-function detachSession(s) {
-  const prev = s.item, name = cardById(prev) ? cardById(prev).name : 'its card';
-  return mutate(() => detachApi(prev, s.id), { msg: `Detached “${sessTitle(s)}” from “${name}” — it’s back in the rail`, undo: () => attachApi(prev, s) });
+// Detach from one card (`from`: the chip you dragged, the × in the inspector), or -- a rail
+// row dragged off the board -- from every card it is on, so it is back to unattached.
+function detachSession(s, from = null) {
+  if (from) {
+    const left = otherCardsOf(s, from);
+    const tail = left.length ? ` — still on ${quoteNames(left)}` : ' — it’s back in the rail';
+    return mutate(() => detachApi(from, s.id), { msg: `Detached “${sessTitle(s)}” from “${nameOf(from)}”${tail}`, undo: () => attachApi(from, s) });
+  }
+  const ids = s.items.slice(); if (!ids.length) return Promise.resolve();
+  const what = ids.length === 1 ? `“${nameOf(ids[0])}”` : `${ids.length} cards`;
+  return mutate(() => Promise.all(ids.map(id => detachApi(id, s.id))), { msg: `Detached “${sessTitle(s)}” from ${what} — it’s back in the rail`, undo: () => Promise.all(ids.map(id => attachApi(id, s))) });
 }
 function setStatus(c, status, note) {
   const prev = { status: c.human || 'open', park_note: c.parkNote || '' };
@@ -695,7 +726,7 @@ stage.addEventListener('pointerdown', e => {
   if (e.button !== 0) return;
   if (e.target.closest('.inspector, .zoomctl, .legend, button, input, textarea, a')) return;
   const chip = e.target.closest('.sess[data-sid]');
-  if (chip) { beginSessDrag(e, chip.dataset.sid, chip); stage.setPointerCapture(e.pointerId); return; }
+  if (chip) { const on = chip.closest('.card'); beginSessDrag(e, chip.dataset.sid, chip, on ? on.dataset.id : null); stage.setPointerCapture(e.pointerId); return; }
   const card = e.target.closest('.card');
   ptr = card ? { mode: 'card', id: card.dataset.id, el: card, sx: e.clientX, sy: e.clientY, moved: false, ghost: null, target: null, nestId: null, nestArmed: false, nestTimer: null }
     : { mode: 'pan', sx: e.clientX, sy: e.clientY, cx: state.cam.x, cy: state.cam.y, moved: false };
@@ -744,9 +775,23 @@ stage.addEventListener('wheel', e => {
   else setCam(state.cam.x - e.deltaX, state.cam.y - e.deltaY, state.cam.s, false);
 }, { passive: false });
 
-// sessions: drag a rail row or a chip on a card. Card -> attach/move. Empty canvas or the rail -> detach.
+// sessions: drag a rail row or a chip on a card. A rail row onto a card *attaches* -- the
+// session keeps every card it already has, this is how it gets onto several. A chip is the
+// session's place on one card, so a chip onto another card *moves* it from this card to that
+// one. Empty canvas or the rail detaches: a chip from its card, a rail row from all of them.
+function sessDropTarget(s, from, hitId, over) {
+  if (hitId && !s.items.includes(hitId)) return { kind: 'card', id: hitId, label: `${from ? 'Move' : 'Attach'} to “${nameOf(hitId)}”` };
+  if (hitId) return null; // a card it is already on
+  if (!(over.rail || (over.stage && !over.chrome))) return null;
+  if (from) return { kind: 'detach', id: from, label: `Release to detach from “${nameOf(from)}”` };
+  if (!s.items.length) return null;
+  return { kind: 'detach', id: null, label: `Release to detach from ${s.items.length === 1 ? `“${nameOf(s.items[0])}”` : `all ${s.items.length} cards`}` };
+}
 const rail = $('#rail'); let sdrag = null;
-function beginSessDrag(e, sid, srcEl) { sdrag = { sid, srcEl, sx: e.clientX, sy: e.clientY, moved: false, ghost: null, target: null }; }
+function beginSessDrag(e, sid, srcEl, from = null) {
+  const where = e.target.closest ? e.target.closest('.where[data-id]') : null; // a card chip inside a rail row: a click goes to that card
+  sdrag = { sid, srcEl, from, goto: where ? where.dataset.id : null, sx: e.clientX, sy: e.clientY, moved: false, ghost: null, target: null };
+}
 function moveSessDrag(e) {
   const d = sdrag, dx = e.clientX - d.sx, dy = e.clientY - d.sy, s = sessById(d.sid); if (!s) return;
   if (!d.moved) { if (Math.hypot(dx, dy) < 5) return; d.moved = true; d.srcEl.classList.add('dragging'); stage.classList.add('sess-drag');
@@ -754,23 +799,24 @@ function moveSessDrag(e) {
   d.ghost.style.left = e.clientX + 'px'; d.ghost.style.top = e.clientY + 'px';
   clearDropTargets(); $('.rail').classList.remove('droptarget'); d.ghost.classList.remove('detaching'); d.target = null;
   const els = document.elementsFromPoint(e.clientX, e.clientY), hit = hitAt(e.clientX, e.clientY);
-  const overRail = els.some(x => x.classList && x.classList.contains('rail')), overStage = els.some(x => x.id === 'stage'), overChrome = els.some(x => x.classList && (x.classList.contains('inspector') || x.classList.contains('zoomctl') || x.classList.contains('legend')));
-  if (hit.card && hit.card.dataset.id !== s.item) { d.target = { kind: 'card', id: hit.card.dataset.id }; mark(hit.card, s.item ? `Move to “${cardById(hit.card.dataset.id).name}”` : `Attach to “${cardById(hit.card.dataset.id).name}”`); }
-  else if (hit.card) { /* its own card */ }
-  else if (s.item && (overRail || (overStage && !overChrome))) { d.target = { kind: 'detach' }; d.ghost.classList.add('detaching'); if (overRail) $('.rail').classList.add('droptarget'); hint(`Release to detach from “${(cardById(s.item) || {}).name || 'its card'}”`); }
+  const over = { rail: els.some(x => x.classList && x.classList.contains('rail')), stage: els.some(x => x.id === 'stage'), chrome: els.some(x => x.classList && (x.classList.contains('inspector') || x.classList.contains('zoomctl') || x.classList.contains('legend'))) };
+  const t = sessDropTarget(s, d.from, hit.card ? hit.card.dataset.id : null, over); d.target = t;
+  if (!t) return;
+  if (t.kind === 'card') mark(hit.card, t.label);
+  else { d.ghost.classList.add('detaching'); if (over.rail) $('.rail').classList.add('droptarget'); hint(t.label); }
 }
 function endSessDrag(e) {
   if (!sdrag) return; const d = sdrag; sdrag = null;
   d.srcEl.classList.remove('dragging'); stage.classList.remove('sess-drag'); if (d.ghost) d.ghost.remove(); clearDropTargets(); $('.rail').classList.remove('droptarget');
   const s = sessById(d.sid); if (!s) return;
   if (!d.moved) {
-    if (d.srcEl.classList.contains('srow')) { if (s.item) reveal(s.item); else { d.srcEl.classList.add('flash'); hint('Unattached — drag it onto a card to attach'); } }
-    else if (s.item) select(s.item);
+    if (d.srcEl.classList.contains('srow')) { if (s.items.length) reveal(d.goto && s.items.includes(d.goto) ? d.goto : s.items[0]); else { d.srcEl.classList.add('flash'); hint('Unattached — drag it onto a card to attach'); } }
+    else if (d.from) select(d.from);
     return;
   }
   const t = d.target; if (!t) return;
-  if (t.kind === 'card') attachSession(s, t.id);
-  if (t.kind === 'detach') detachSession(s);
+  if (t.kind === 'card') attachSession(s, t.id, d.from);
+  if (t.kind === 'detach') detachSession(s, t.id);
 }
 rail.addEventListener('pointerdown', e => { const row = e.target.closest('.srow'); if (!row || e.button !== 0) return; beginSessDrag(e, row.dataset.sid, row); row.setPointerCapture(e.pointerId); });
 rail.addEventListener('pointermove', e => { if (sdrag) moveSessDrag(e); });
@@ -892,7 +938,7 @@ $('#inspector').addEventListener('click', e => {
   if (a === 'copy-brief') copyBrief(c);
   if (a === 'toggle-done') setStatus(c, c.human === 'done' ? 'open' : 'done');
   if (a === 'toggle-park') setStatus(c, c.human === 'parked' ? 'open' : 'parked');
-  if (a === 'detach') { const s = sessById(act.dataset.sid); if (s) detachSession(s); }
+  if (a === 'detach') { const s = sessById(act.dataset.sid); if (s) detachSession(s, c.id); }
   if (a === 'resume' || a === 'resume-first') {
     const s = a === 'resume' ? sessById(act.dataset.sid) : (sessOf(c.id).find(x => x.state === 'needs_you') || sessOf(c.id)[0]); if (!s) return;
     state.resumeOpen = state.resumeOpen === s.id ? null : s.id; renderInspector();
