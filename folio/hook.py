@@ -3,6 +3,10 @@
 A pure observer. Reads one hook event (JSON) from stdin, records coarse
 metadata, exits 0 and prints NOTHING to stdout -- so it can never approve,
 deny, block or otherwise influence Claude Code. Any failure is swallowed.
+
+The one thing it reads out of a prompt is the `id:` line of a pasted card
+brief: "work on task - <brief>" attaches the session to that card
+(`attach_from_prompt`). The prompt itself is never stored.
 """
 from __future__ import annotations
 
@@ -12,8 +16,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .brief import card_id_in_text
 from .config import resolve_data_dir
-from .runtime import RuntimeStore
+from .items import Item, ItemStore
+from .runtime import _SAFE_ID, RuntimeStore
 
 
 def find_claude_process(start_pid: int | None = None, max_depth: int = 4) -> tuple[int | None, bool | None]:
@@ -55,11 +61,40 @@ def find_claude_pid(start_pid: int | None = None, max_depth: int = 4) -> int | N
     return find_claude_process(start_pid, max_depth)[0]
 
 
+def attach_from_prompt(event: dict, items_dir: Path) -> Item | None:
+    """Attach the session to the card whose brief the submitted prompt carries.
+
+    Pasting a card's copied brief -- "work on task - <brief>" -- is how a session
+    is pointed at a card, and the brief's `id: … · status: …` line is what names
+    it. This does what the inspector's *attach* does, from the prompt alone: the
+    card gains the session id in its Markdown, and an *idea* becomes *active*.
+
+    The id is the only thing read out of the prompt. Attaching adds and never
+    removes: a session may sit on several cards (the survey and the prototype it
+    led to), so a second card's brief pasted later puts the session on that card
+    too and leaves the first alone. Prompts from inside a subagent are not
+    yours, so they are ignored.
+    """
+    if event.get("hook_event_name") != "UserPromptSubmit" or event.get("agent_id"):
+        return None
+    session_id = str(event.get("session_id") or "")
+    prompt = event.get("prompt")
+    card_id = card_id_in_text(prompt if isinstance(prompt, str) else None)
+    if not card_id or not _SAFE_ID.match(session_id):
+        return None
+    store = ItemStore(items_dir)
+    item = store.get(card_id)
+    if item is None or session_id in item.session_ids():
+        return None
+    return store.attach_session(item, session_id)
+
+
 def run(stdin_text: str, data_dir: Path) -> None:
     event = json.loads(stdin_text) if stdin_text.strip() else {}
     if not isinstance(event, dict):
         return
     RuntimeStore(data_dir / "runtime").record_event(event, process_finder=find_claude_process)
+    attach_from_prompt(event, data_dir / "items")
 
 
 def main(data_dir: str | None = None) -> int:

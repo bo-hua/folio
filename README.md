@@ -96,7 +96,9 @@ permission decision.
 
 It stores session ids, states, timestamps, cwd, permission mode, a best-effort pid,
 and the *path* of the transcript. **Never** prompts, responses, tool arguments,
-transcript contents, or code.
+transcript contents, or code. The one thing it reads out of a prompt is the `id:`
+line of a pasted card brief, so a session started with *work on task — ‹brief›*
+attaches itself to that card; the prompt itself is never written anywhere.
 
 folio also never launches, steers, or kills a session. "Resume" hands you the right
 shell command to copy. That boundary is deliberate: folio is safe to leave running
@@ -123,7 +125,8 @@ and the app lays it out.
 - **Copy for Claude** — the copy button on a card (or **C** with a card open) puts
   the whole card on the clipboard as one block: name, id and file, notes, links,
   attached sessions with branch and last prompt, children, and the notes of every
-  card above it. Type *work on this feature* in Claude Code and paste.
+  card above it. Type *work on this feature* in Claude Code and paste; the hook
+  spots the brief's `id:` line and attaches that session to the card by itself.
 
 **H** cycles the focus filter: *All → Hide done → Focus* (only cards with a Claude
 session attached: open cards with any session, ended or not, plus whatever a session

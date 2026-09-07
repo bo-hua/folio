@@ -44,7 +44,7 @@ function h(tag, attrs = {}, ...kids) {
 }
 const chevron = () => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 10 10'); s.innerHTML = '<path d="M3 1.5 6.5 5 3 8.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>'; return s; };
 const copyIcon = () => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 14 14'); s.setAttribute('aria-hidden', 'true'); s.innerHTML = '<rect x="4.75" y="4.75" width="7.5" height="7.5" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M9.25 4.75V3.2A1.45 1.45 0 0 0 7.8 1.75H3.2A1.45 1.45 0 0 0 1.75 3.2v4.6A1.45 1.45 0 0 0 3.2 9.25h1.55" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>'; return s; };
-const COPY_TIP = 'Copy for Claude — the card’s name, notes, sessions, children and parents as one block to paste into a prompt';
+const COPY_TIP = 'Copy for Claude — the card’s name, notes, sessions, children and parents as one block to paste into a prompt. The session you paste it into attaches itself to this card.';
 const cardById = id => CARDS.find(c => c.id === id);
 const areaById = id => AREAS.find(a => a.id === id);
 const kidsOf = id => CARDS.filter(c => c.parent === id);

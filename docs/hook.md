@@ -12,7 +12,24 @@ needs_you / ready / ended), `attention` (permission / question), `last_event`,
 best-effort `pid`, and `main_event_at` / `agent_event_at` (which side of the
 session we last heard from — see *Subagents* below).
 
-**Never** prompts, responses, tool arguments, transcript contents or code.
+**Never** prompts, responses, tool arguments, transcript contents or code. A
+submitted prompt is *looked at* once, for the `id:` line of a pasted card brief
+(next section); only the card id comes out of it.
+
+## Pointing a session at a card
+
+*Work on task —* followed by a card's copied brief is how a session is handed a
+card, and the brief's second line — `id: <id> · status: … · in: …` — is what names
+it. The hook looks for exactly that line in every `UserPromptSubmit`. When it finds
+one and the card exists, the session is attached to the card, the same as the
+inspector's *attach*: the session id lands in the card's Markdown, and an *idea*
+becomes *active* on the board. Nothing else is read out of the prompt, and the
+prompt itself is still never stored.
+
+Attaching adds and never removes. A session may sit on several cards, so a second
+card's brief pasted later puts the session on that card too and leaves the first
+alone; detach it in the inspector if you only meant to quote the card. Prompts from
+inside a subagent are ignored, as is a brief whose card no longer exists.
 
 ## Event → state
 

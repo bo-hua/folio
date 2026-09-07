@@ -12,6 +12,7 @@ a slash command and a shell command respectively.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from .items import Item
@@ -19,6 +20,22 @@ from .items import Item
 # Runtime states read as labels; anything not listed is already a word.
 STATE_LABEL = {"needs_you": "needs you", "unknown": "no runtime info"}
 NO_NOTES = "(no notes yet)"
+
+# The brief's second line, `id: <id> · status: <status> · in: <where>`. The hook
+# looks for exactly this line in a submitted prompt to attach the session to the
+# card (`hook.attach_from_prompt`), so it must keep matching what `render_brief`
+# writes. Leading `>` / whitespace allows a quoted or indented paste.
+ID_LINE_RE = re.compile(r"^[ \t>]*id: ([A-Za-z0-9._-]+) · status: ", re.MULTILINE)
+
+
+def card_id_in_text(text: str | None) -> str | None:
+    """The id of the card whose brief is pasted into `text`, or None.
+
+    Only the brief's own `id:` line counts, so a prompt that merely mentions a
+    card never matches. When several briefs are pasted the first one wins.
+    """
+    m = ID_LINE_RE.search(text or "")
+    return m.group(1) if m else None
 
 
 def tilde(path: str | Path | None, home: Path | None = None) -> str:
