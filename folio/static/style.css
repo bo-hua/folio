@@ -110,7 +110,11 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .srow .m{display:flex;align-items:center;gap:6px;margin-top:3px;font-size:11.5px;color:var(--muted);min-width:0}
 .srow .m .br{font-family:var(--mono);font-size:10.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .srow .m .ago{margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap}
-.srow .where{display:inline-flex;align-items:center;gap:4px;margin-top:5px;padding:2px 7px 2px 6px;border-radius:5px;font-size:11px;background:var(--accent-soft);color:var(--accent-ink);max-width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+/* the cards a session sits on: one chip each, since a session can be on several; a click goes to that card */
+.srow .wheres{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px;min-width:0}
+.srow .where{display:inline-flex;align-items:center;gap:4px;padding:2px 7px 2px 6px;border-radius:5px;font-size:11px;background:var(--accent-soft);color:var(--accent-ink);max-width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.srow .where[data-id]{cursor:pointer}
+.srow .where[data-id]:hover{text-decoration:underline}
 .srow .where.none{background:transparent;border:1px dashed var(--line-2);color:var(--muted)}
 .srow .where .glyph{transform:scale(.85)}
 .rail-empty{padding:18px 12px;color:var(--faint);font-size:12px;text-align:center}
@@ -298,6 +302,10 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .ins-sess .t{font-weight:500}
 .ins-sess .m{font-size:11px;color:var(--muted);margin-top:2px;display:flex;gap:8px;flex-wrap:wrap}
 .ins-sess .m .mono{font-size:10.5px}
+/* the same session, on other cards too */
+.ins-sess .also{font-size:11px;color:var(--muted);margin-top:3px}
+.ins-sess .also button.link{color:var(--accent-ink)}
+.ins-sess .also button.link:hover{text-decoration:underline}
 .ins-sess .acts{display:flex;gap:4px}
 .mini{padding:3px 8px;border-radius:6px;border:1px solid var(--line);font-size:11px;color:var(--ink-2);background:var(--surface)}
 .mini:hover{background:var(--raised);border-color:var(--line-2)}

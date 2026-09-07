@@ -536,12 +536,27 @@ class ItemStore:
         return gone
 
     def detach_session_everywhere(self, session_id: str, items: list[Item] | None = None, except_id: str | None = None) -> list[Item]:
-        """A session belongs to at most one item: remove it from every other one."""
+        """Remove a session from every item (but `except_id`). A session may sit on
+        several items; this is the opt-in "make it exclusive to one card" path."""
         items = self.list_items() if items is None else items
         changed = []
         for it in items:
             if it.id != except_id and session_id in it.session_ids():
                 changed.append(self.detach_session(it, session_id))
+        return changed
+
+    def retitle_session(self, session_id: str, title: str, items: list[Item] | None = None) -> list[Item]:
+        """Set a session's title on every item it sits on: the title names the
+        session, not its place on one card, so the cards must not disagree."""
+        items = self.list_items() if items is None else items
+        title = title.strip()
+        changed = []
+        for it in items:
+            hit = [s for s in it.sessions if s["id"] == session_id]
+            if hit and any(s.get("title", "") != title for s in hit):
+                for s in hit:
+                    s["title"] = title
+                changed.append(self.save(it))
         return changed
 
     def attach_session(self, item: Item, session_id: str, title: str = "") -> Item:

@@ -256,27 +256,34 @@ class App:
 
     def sessions_view(self, snap: Snapshot, include_all: bool = False) -> list[dict]:
         """Every session the UI should list: observed by the hook inside the repo
-        (or anywhere with include_all) plus anything attached to an item."""
-        attached: dict[str, tuple[str, str]] = {}
+        (or anywhere with include_all) plus anything attached to an item.
+
+        A session can sit on several cards, so each row carries `items` -- every
+        card it is on -- and `item`, the first of them (or None), for readers that
+        only want one. Its title is the first one any of those cards gives it."""
+        attached: dict[str, list[str]] = {}
+        titles: dict[str, str] = {}
         for item in snap.items:
             for s in item.sessions:
                 if s.get("id"):
-                    attached.setdefault(s["id"], (item.id, s.get("title") or ""))
+                    attached.setdefault(s["id"], []).append(item.id)
+                    if s.get("title") and not titles.get(s["id"]):
+                        titles[s["id"]] = s["title"]
         out: dict[str, dict] = {}
         for rec in self.runtime.list():
             sid = rec["session_id"]
-            title = attached[sid][1] if sid in attached else ""
-            view = self.session_view({"id": sid, "title": title}, snap)
+            view = self.session_view({"id": sid, "title": titles.get(sid, "")}, snap)
             if not (view["in_repo"] or include_all or sid in attached):
                 continue
             if view["spare"] and sid not in attached:
                 continue  # standing by for the next job: counted by spares_view, not a row
             out[sid] = view
-        for sid, (iid, title) in attached.items():
+        for sid in attached:
             if sid not in out:
-                out[sid] = self.session_view({"id": sid, "title": title}, snap)
+                out[sid] = self.session_view({"id": sid, "title": titles.get(sid, "")}, snap)
         for sid, view in out.items():
-            view["item"] = attached[sid][0] if sid in attached else None
+            view["items"] = list(attached.get(sid, []))
+            view["item"] = view["items"][0] if view["items"] else None
         return sorted(out.values(), key=lambda v: v.get("updated_at") or "", reverse=True)
 
     def spares_view(self, snap: Snapshot, include_all: bool = False) -> dict:
@@ -490,25 +497,31 @@ class App:
         return {"deleted": [i.id for i in gone]}
 
     def attach_session(self, item_id: str, body: dict) -> dict:
-        """Attach a session; by default it leaves whatever other item it was on (a
-        session belongs to one card), unless `exclusive` is false."""
+        """Attach a session to a card. A session may sit on any number of cards --
+        one piece of work often spans several -- so attaching adds, it does not
+        move. `from` names one card to leave at the same time (a move between two
+        cards); `exclusive: true` leaves every other card (the old default)."""
         item = self._get_item(item_id)
         sid = str(body.get("session_id") or "").strip()
         if not _ID_RE.match(sid):
             raise ApiError(400, "session_id is required")
-        if body.get("exclusive", True):
+        if body.get("exclusive", False):
             self.items.detach_session_everywhere(sid, except_id=item.id)
+        elif body.get("from"):
+            src = self.items.get(str(body["from"]))
+            if src is not None and src.id != item.id:
+                self.items.detach_session(src, sid)
         self.items.attach_session(item, sid, str(body.get("title") or ""))
         return self.item_detail(item.id)
 
     def update_session(self, item_id: str, sid: str, body: dict) -> dict:
+        """Retitle a session. The title is the session's, not the card's, so it
+        changes on every card the session sits on."""
         item = self._get_item(item_id)
-        for s in item.sessions:
-            if s["id"] == sid:
-                s["title"] = str(body.get("title") or "").strip()
-                self.items.save(item)
-                return self.item_detail(item.id)
-        raise ApiError(404, "session not attached")
+        if sid not in item.session_ids():
+            raise ApiError(404, "session not attached")
+        self.items.retitle_session(sid, str(body.get("title") or ""))
+        return self.item_detail(item.id)
 
     def detach_session(self, item_id: str, sid: str) -> dict:
         item = self._get_item(item_id)

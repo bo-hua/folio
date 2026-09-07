@@ -22,8 +22,13 @@ Notes:
 
 - `POST /api/items/<id>/move` renumbers sibling `order`.
 - `DELETE /api/items/<id>` cascades to everything nested under it.
-- Attaching a session detaches it from any other item unless `exclusive: false` —
-  a session lives on exactly one card.
+- A session can sit on any number of cards. `POST /api/items/<id>/sessions` adds it
+  to that card and leaves its other cards alone; pass `from: <item id>` to leave
+  that one card at the same time (a move), or `exclusive: true` to leave every
+  other card. Each session in `/api/overview` carries `items` (every card it is
+  on) and `item` (the first of them, or `null`).
+- `PATCH /api/items/<id>/sessions/<sid>` with `title` renames the session on every
+  card it sits on: the title belongs to the session, not to one card.
 - Every session carries `spare` (bool). A spare is a background session Claude Code
   started ahead of the next job and nothing has prompted yet: not listed until its
   first prompt lands, unless you attached it to a card yourself. See

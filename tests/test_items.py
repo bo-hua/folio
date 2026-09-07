@@ -238,3 +238,20 @@ def test_a_case_only_rename_moves_the_file_instead_of_suffixing_it(store):
 
     assert item.path.name == "Rework the UI.md"
     assert [p.name for p in (store.items_dir / "Area").glob("*.md")] == ["Rework the UI.md"]
+
+
+def test_retitle_session_renames_it_on_every_item_it_sits_on(store):
+    """A session can be on several items; its title names the session, so the
+    items must not disagree about it."""
+    a = store.create("Survey", "Area")
+    b = store.create("Prototype", "Area")
+    c = store.create("Unrelated", "Area")
+    store.attach_session(a, "sess-1", "sweep")
+    store.attach_session(b, "sess-1", "")
+    store.attach_session(c, "sess-2", "other")
+    changed = store.retitle_session("sess-1", " discounted sweep ")
+    assert sorted(i.id for i in changed) == sorted([a.id, b.id])
+    assert store.get(a.id).sessions == [{"id": "sess-1", "title": "discounted sweep"}]
+    assert store.get(b.id).sessions == [{"id": "sess-1", "title": "discounted sweep"}]
+    assert store.get(c.id).sessions == [{"id": "sess-2", "title": "other"}], "an unrelated item is untouched"
+    assert store.retitle_session("sess-1", "discounted sweep") == [], "nothing to write when it already agrees"

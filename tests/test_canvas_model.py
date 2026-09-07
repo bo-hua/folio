@@ -205,17 +205,17 @@ def test_move_endpoint_cascade_delete_and_exclusive_attach(server):
     # cycle refused; bad types refused
     assert call("POST", f"/api/items/{a['id']}/move", {"parent": c["id"]})[0] == 400
     assert call("POST", f"/api/items/{a['id']}/move", {"parent": 3})[0] == 400
-    # exclusive attach: the session leaves B when attached to A
+    # attach adds: a session can sit on several cards, so attaching to A leaves it on B
     call("POST", f"/api/items/{b['id']}/sessions", {"session_id": "s-1", "title": "T"})
     call("POST", f"/api/items/{a['id']}/sessions", {"session_id": "s-1", "title": "T"})
     _, ov = call("GET", "/api/overview")
     by = {i["id"]: i for i in ov["items"]}
-    assert [s["id"] for s in by[b["id"]]["sessions"]] == [] and [s["id"] for s in by[a["id"]]["sessions"]] == ["s-1"]
-    # non-exclusive attach keeps both
-    call("POST", f"/api/items/{b['id']}/sessions", {"session_id": "s-1", "exclusive": False})
+    assert [s["id"] for s in by[b["id"]]["sessions"]] == ["s-1"] and [s["id"] for s in by[a["id"]]["sessions"]] == ["s-1"]
+    # exclusive is the opt-in: the session leaves every other card
+    call("POST", f"/api/items/{a['id']}/sessions", {"session_id": "s-1", "exclusive": True})
     _, ov = call("GET", "/api/overview")
     by = {i["id"]: i for i in ov["items"]}
-    assert [s["id"] for s in by[b["id"]]["sessions"]] == ["s-1"] and [s["id"] for s in by[a["id"]]["sessions"]] == ["s-1"]
+    assert [s["id"] for s in by[b["id"]]["sessions"]] == [] and [s["id"] for s in by[a["id"]]["sessions"]] == ["s-1"]
     # cascade delete: A takes C with it
     st, res = call("DELETE", f"/api/items/{a['id']}")
     assert st == 200 and set(res["deleted"]) == {a["id"], c["id"]}
