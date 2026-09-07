@@ -31,7 +31,9 @@ Notes:
 - `GET /api/items/<id>/brief` returns `{id, name, text}`. `text` is the card's name,
   id and file, its notes, links, attached sessions (state, branch, cwd, last
   prompt), children, and the notes of every card above it. It never starts with
-  `#`, `/` or `!`, so it is safe to paste into Claude Code on its own.
+  `#`, `/` or `!`, so it is safe to paste into Claude Code on its own. Pasted into
+  a session's prompt it also attaches that session to the card: the hook recognises
+  the `id:` line ([hook.md](hook.md#pointing-a-session-at-a-card)).
 
 Example:
 
