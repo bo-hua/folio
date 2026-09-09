@@ -42,6 +42,11 @@ function h(tag, attrs = {}, ...kids) {
   for (const k of kids.flat(Infinity)) if (k != null && k !== false) e.append(k.nodeType ? k : document.createTextNode(String(k)));
   return e;
 }
+// A label inside a flex chip. `text-overflow` needs a line box to put the ellipsis on, and a flex
+// container has none -- its children are flex items -- so an ellipsis declared on the chip itself
+// never appears: a long name is sliced mid-word and takes the pill's rounded end with it. Giving
+// the label its own inline box gets the ellipsis back. See `.ellip` in style.css.
+const ellip = text => h('span', { class: 'ellip' }, text);
 const chevron = () => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 10 10'); s.innerHTML = '<path d="M3 1.5 6.5 5 3 8.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>'; return s; };
 const copyIcon = () => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 14 14'); s.setAttribute('aria-hidden', 'true'); s.innerHTML = '<rect x="4.75" y="4.75" width="7.5" height="7.5" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M9.25 4.75V3.2A1.45 1.45 0 0 0 7.8 1.75H3.2A1.45 1.45 0 0 0 1.75 3.2v4.6A1.45 1.45 0 0 0 3.2 9.25h1.55" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>'; return s; };
 // A snooze is a crescent, wherever it appears: the button that silences a ringing card, and the
@@ -347,7 +352,7 @@ function compStrip(kids) {
 }
 function sessChip(s, card) {
   const also = otherCardsOf(s, card), zz = snoozed(s);
-  return h('span', { class: `sess ${s.state}${zz ? ' snoozed' : ''}`, 'data-sid': s.id, title: `${sessTitle(s)} — ${STATE_LABEL[s.state] || s.state}${s.attention ? ' · ' + s.attention : ''}${zz ? `, snoozed — quiet for another ${snoozeText(s)}` : ''}${s.prompt ? `\n\nlast prompt: ${s.prompt}` : ''}${also.length ? `\n\nalso on ${quoteNames(also)}` : ''}\n\nDrag to another card to move it there; off the card to detach it from this one.` }, h('i', { class: `dot ${s.state}${zz ? ' snoozed' : ''}` }), sessTitle(s));
+  return h('span', { class: `sess ${s.state}${zz ? ' snoozed' : ''}`, 'data-sid': s.id, title: `${sessTitle(s)} — ${STATE_LABEL[s.state] || s.state}${s.attention ? ' · ' + s.attention : ''}${zz ? `, snoozed — quiet for another ${snoozeText(s)}` : ''}${s.prompt ? `\n\nlast prompt: ${s.prompt}` : ''}${also.length ? `\n\nalso on ${quoteNames(also)}` : ''}\n\nDrag to another card to move it there; off the card to detach it from this one.` }, h('i', { class: `dot ${s.state}${zz ? ' snoozed' : ''}` }), ellip(sessTitle(s)));
 }
 function cardEl(c, depth = 0) {
   const kids = visKidsOf(c.id), hiddenKids = kidsOf(c.id).length - kids.length, sess = sessOf(c.id), lc = lifecycle(c), ag = attn(c.id);
@@ -556,7 +561,7 @@ function renderRail() {
       // one chip per card the session sits on -- click one to go to that card
       const cards = cardsOf(s);
       const where = h('div', { class: 'wheres' }, cards.length
-        ? cards.map(card => h('span', { class: 'where', 'data-id': card.id, title: `On “${card.name}” — click to go there` }, h('i', { class: `glyph ${lifecycle(card)}` }), card.name))
+        ? cards.map(card => h('span', { class: 'where', 'data-id': card.id, title: `On “${card.name}” — click to go there` }, h('i', { class: `glyph ${lifecycle(card)}` }), ellip(card.name)))
         : (s.hidden ? '' : h('span', { class: 'where none' }, 'unattached · drag onto a card')), snoozeChip(s), hideChip(s));
       g.appendChild(h('div', { class: `srow${s.hidden && !cards.length ? ' tucked' : ''}${snoozed(s) ? ' snoozed' : ''}`, 'data-sid': s.id, tabindex: '0', title: sessTip(s) }, h('i', { class: `dot ${s.state}${snoozed(s) ? ' snoozed' : ''}` }),
         h('div', { style: 'min-width:0' }, h('div', { class: 't' }, sessTitle(s)),
@@ -608,7 +613,7 @@ function renderInspector() {
   ins.classList.add('open'); ins.innerHTML = ''; ins.dataset.card = c.id;
   const lc = lifecycle(c), kids = kidsOf(c.id), sess = sessOf(c.id), ag = attn(c.id), area = areaOf(c.id);
   const path = h('div', { class: 'ins-path' }, h('b', {}, area ? area.name : c.area));
-  ancestors(c.id).forEach(pid => { path.append(h('span', { class: 'crumb-sep' }, '›'), h('button', { class: 'crumb', style: 'padding:0 2px', 'data-act': 'reveal', 'data-id': pid }, cardById(pid).name)); });
+  ancestors(c.id).forEach(pid => { path.append(h('span', { class: 'crumb-sep' }, '›'), h('button', { class: 'crumb', style: 'padding:0 2px', 'data-act': 'reveal', 'data-id': pid }, ellip(cardById(pid).name))); });
   const acts = h('span', { class: 'ins-acts' }, h('button', { class: 'mini ico', 'data-act': 'copy-brief', title: COPY_TIP }, copyIcon(), 'Copy for Claude'));
   if (c.parent) acts.appendChild(h('button', { class: 'mini', 'data-act': 'move-out', title: 'Make it a sibling of its parent' }, '↑ Move out'));
   path.appendChild(acts);
@@ -852,7 +857,7 @@ function armNest(el, id, p) { // nesting arms after a short settle so a fast swe
   p.nestTimer = setTimeout(() => { if (ptr !== p || p.nestId !== id) return; p.nestArmed = true; const cur = $(`.card[data-id="${id}"]`); if (cur) { cur.classList.remove('dwell'); mark(cur, label); } p.target = { kind: 'parent', id }; p.ghost && p.ghost.classList.add('going-in'); }, 140);
 }
 function disarmNest(p) { clearTimeout(p.nestTimer); p.nestId = null; p.nestArmed = false; p.ghost && p.ghost.classList.remove('going-in'); }
-function makeGhost(c) { const n = descendantCount(c.id); const g = h('div', { class: 'ghost' }, h('i', { class: `glyph ${lifecycle(c)}` }), c.name, n ? h('span', { class: 'n' }, `· ${n} inside`) : ''); document.body.appendChild(g); return g; }
+function makeGhost(c) { const n = descendantCount(c.id); const g = h('div', { class: 'ghost' }, h('i', { class: `glyph ${lifecycle(c)}` }), ellip(c.name), n ? h('span', { class: 'n' }, `· ${n} inside`) : ''); document.body.appendChild(g); return g; }
 function endCardDrag(p) { disarmNest(p); p.el.classList.remove('dragging-src'); if (p.ghost) p.ghost.remove(); clearDropTargets(); stage.classList.remove('card-drag'); }
 
 stage.addEventListener('pointerdown', e => {
@@ -928,7 +933,7 @@ function beginSessDrag(e, sid, srcEl, from = null) {
 function moveSessDrag(e) {
   const d = sdrag, dx = e.clientX - d.sx, dy = e.clientY - d.sy, s = sessById(d.sid); if (!s) return;
   if (!d.moved) { if (Math.hypot(dx, dy) < 5) return; d.moved = true; d.srcEl.classList.add('dragging'); stage.classList.add('sess-drag');
-    d.ghost = h('div', { class: 'sess sghost ' + s.state }, h('i', { class: 'dot ' + s.state }), sessTitle(s)); document.body.appendChild(d.ghost); }
+    d.ghost = h('div', { class: 'sess sghost ' + s.state }, h('i', { class: 'dot ' + s.state }), ellip(sessTitle(s))); document.body.appendChild(d.ghost); }
   d.ghost.style.left = e.clientX + 'px'; d.ghost.style.top = e.clientY + 'px';
   clearDropTargets(); $('.rail').classList.remove('droptarget'); d.ghost.classList.remove('detaching'); d.target = null;
   const els = document.elementsFromPoint(e.clientX, e.clientY), hit = hitAt(e.clientX, e.clientY);

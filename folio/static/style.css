@@ -63,7 +63,11 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .app{display:grid;grid-template-columns:288px 1fr;grid-template-rows:46px 1fr;height:100vh;width:100vw}
 .topbar{grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:0 14px 0 16px;background:var(--surface);border-bottom:1px solid var(--line);z-index:5}
 .brand{font-family:var(--serif);font-style:italic;font-size:21px;letter-spacing:-.01em;color:var(--ink);margin-right:6px}
-.crumb{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:6px;color:var(--muted);max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .15s,color .15s}
+/* Chips and crumbs are flex boxes, so their label carries the ellipsis (see `ellip` in app.js):
+   `text-overflow` on a flex container does nothing at all -- there is no line box for the ellipsis
+   to sit on -- and a long name came out sliced mid-word with the rounded end of the pill cut off. */
+.ellip{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.crumb{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:6px;color:var(--muted);max-width:260px;white-space:nowrap;overflow:hidden;transition:background .15s,color .15s}
 .crumb:hover{background:var(--raised);color:var(--ink)}
 .crumb-sep{color:var(--faint);font-size:12px}
 .topbar .repo{font-family:var(--mono);font-size:11px;color:var(--muted);padding:3px 8px;border:1px solid var(--line);border-radius:6px}
@@ -112,7 +116,7 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .srow .m .ago{margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap}
 /* the cards a session sits on: one chip each, since a session can be on several; a click goes to that card */
 .srow .wheres{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px;min-width:0}
-.srow .where{display:inline-flex;align-items:center;gap:4px;padding:2px 7px 2px 6px;border-radius:5px;font-size:11px;background:var(--accent-soft);color:var(--accent-ink);max-width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.srow .where{display:inline-flex;align-items:center;gap:4px;padding:2px 7px 2px 6px;border-radius:5px;font-size:11px;background:var(--accent-soft);color:var(--accent-ink);max-width:100%;min-width:0;overflow:hidden;white-space:nowrap}
 .srow .where[data-id]{cursor:pointer}
 .srow .where[data-id]:hover{text-decoration:underline}
 .srow .where.none{background:transparent;border:1px dashed var(--line-2);color:var(--muted)}
@@ -232,7 +236,7 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .tog svg{width:10px;height:10px;transition:transform .2s var(--ease);transform:rotate(90deg)}
 .card.collapsed .tog svg{transform:rotate(0)}
 .card-row{display:flex;align-items:center;gap:6px;margin-top:10px;flex-wrap:wrap}
-.sess{display:inline-flex;align-items:center;gap:6px;padding:3px 9px 3px 7px;border-radius:999px;font-size:11.5px;color:var(--ink-2);background:var(--raised);border:1px solid var(--line);max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sess{display:inline-flex;align-items:center;gap:6px;padding:3px 9px 3px 7px;border-radius:999px;font-size:11.5px;color:var(--ink-2);background:var(--raised);border:1px solid var(--line);max-width:100%;min-width:0;white-space:nowrap;overflow:hidden}
 .sess.needs_you{background:var(--attn-soft);border-color:transparent;color:var(--attn-ink);font-weight:500}
 .sess.working{background:var(--work-soft);border-color:transparent;color:var(--work)}
 .sess.ready{background:var(--ready-soft);border-color:transparent;color:var(--ready)}
@@ -279,7 +283,7 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .fold.open svg{transform:rotate(90deg)}
 .insline{position:absolute;height:2px;background:var(--accent);border-radius:1px;pointer-events:none;z-index:30;display:none}
 .insline::before{content:"";position:absolute;left:-4px;top:-3px;width:8px;height:8px;border-radius:50%;background:var(--accent)}
-.ghost{position:fixed;z-index:100;pointer-events:none;transform:translate(-10px,-50%);background:var(--surface);border:1px solid var(--line-2);box-shadow:var(--shadow-2);border-radius:9px;padding:6px 11px 6px 9px;font-weight:500;font-size:12.5px;display:flex;gap:7px;align-items:center;max-width:280px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:transform .18s var(--ease),opacity .18s}
+.ghost{position:fixed;z-index:100;pointer-events:none;transform:translate(-10px,-50%);background:var(--surface);border:1px solid var(--line-2);box-shadow:var(--shadow-2);border-radius:9px;padding:6px 11px 6px 9px;font-weight:500;font-size:12.5px;display:flex;gap:7px;align-items:center;max-width:280px;white-space:nowrap;overflow:hidden;transition:transform .18s var(--ease),opacity .18s}
 .ghost.going-in{transform:translate(-10px,-50%) scale(.88);opacity:.8}
 .ghost .n{color:var(--muted);font-weight:400;font-size:11.5px}
 

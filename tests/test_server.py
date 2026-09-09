@@ -781,3 +781,44 @@ def test_snoozing_a_session_quietens_its_cards_without_losing_it(server):
     assert any(line.startswith(".dot.needs_you.snoozed{") for line in lines), "a silenced dot stops ringing"
     assert any(line.startswith(".zz{") for line in lines)
     assert "@media (prefers-reduced-motion:reduce){" in css, "and the motion can be turned off"
+
+
+def test_a_chip_ends_in_an_ellipsis_rather_than_mid_word(server):
+    """`text-overflow: ellipsis` does nothing on a flex container.
+
+    There is no line box for the ellipsis to sit on -- the children are flex items -- so the
+    declaration is silently ignored and `overflow: hidden` clips the label instead: a long card
+    name came out sliced mid-word with the rounded end of the pill cut off, which read as a
+    panel drawn too narrow. Twenty-one of the eighty-two chips on a real board did it.
+
+    The fix is one element: the label goes in its own inline box, which can elide. This guards
+    both halves -- that the label is wrapped, and that no chip goes back to declaring the
+    ellipsis on the flex box itself, where it would look fixed and not be.
+    """
+    with urllib.request.urlopen(server["url"] + "/static/style.css", timeout=10) as res:
+        css = res.read().decode()
+    with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
+        js = res.read().decode()
+
+    assert any(line.startswith(".ellip{") for line in css.splitlines()), "the label class is served"
+    ellip = next(line for line in css.splitlines() if line.startswith(".ellip{"))
+    for prop in ("text-overflow:ellipsis", "overflow:hidden", "white-space:nowrap", "min-width:0"):
+        assert prop in ellip, f"{prop} is what makes the ellipsis appear"
+
+    # no rule may set the ellipsis on a flex box: it is inert there, and hides the real bug
+    inert = [
+        line.split("{")[0]
+        for line in css.splitlines()
+        if "text-overflow:ellipsis" in line and ("display:flex" in line or "display:inline-flex" in line)
+    ]
+    assert inert == [], f"these declare an ellipsis a flex container can never draw: {inert}"
+
+    # and every chip that can hold a long name wraps it
+    for builder in (
+        "h('i', { class: `dot ${s.state}${zz ? ' snoozed' : ''}` }), ellip(sessTitle(s))",   # on a card
+        "h('i', { class: `glyph ${lifecycle(card)}` }), ellip(card.name)",                   # in the rail
+        "'data-id': pid }, ellip(cardById(pid).name))",                                     # the breadcrumb
+        "h('i', { class: `glyph ${lifecycle(c)}` }), ellip(c.name)",                        # the card ghost
+        "h('i', { class: 'dot ' + s.state }), ellip(sessTitle(s))",                          # the session ghost
+    ):
+        assert builder in js, f"unwrapped label: {builder}"
