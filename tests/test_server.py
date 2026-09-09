@@ -174,6 +174,19 @@ def test_delete_area_removes_directory_and_items(server):
     assert call("GET", "/api/areas/Other")[0] == 405
 
 
+def test_other_repos_toggle_ships_on(server):
+    """The rail lists every repo's sessions out of the box, and remembers an untick."""
+    with urllib.request.urlopen(server["url"] + "/", timeout=10) as res:
+        shell = res.read()
+    box = shell[shell.index(b'id="allRepos"') - 40 : shell.index(b'id="allRepos"') + 40]
+    assert b"checked" in box, f"the other-repos box must ship ticked: {box!r}"
+    with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
+        app_js = res.read()
+    assert b"allRepos: true" in app_js                      # ... and the state agrees with the markup
+    assert b"localStorage.setItem('folio.allRepos'" in app_js  # an untick outlives the reload
+    assert b"localStorage.getItem('folio.allRepos')" in app_js
+
+
 def test_static_shell_and_bind_guard(server):
     with urllib.request.urlopen(server["url"] + "/", timeout=10) as res:
         assert res.status == 200 and res.headers["Content-Type"].startswith("text/html")
