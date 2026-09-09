@@ -13,7 +13,7 @@ import sys
 import threading
 import traceback
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -26,7 +26,8 @@ from .config import Config
 from .gitinfo import Worktree, match_cwd, repo_snapshot
 from .items import HUMAN_STATUSES, STATUSES, Item, ItemStore
 from .runtime import (
-    NEEDS_YOU, UNKNOWN, RuntimeStore, aggregate_attention, effective_state, is_live, is_spare, iso, utc_now,
+    NEEDS_YOU, SNOOZE_MAX, SNOOZED, UNKNOWN, RuntimeStore, aggregate_attention, effective_state, is_live,
+    is_snoozed, is_spare, iso, utc_now,
 )
 from .transcript import describe as describe_session
 
@@ -99,6 +100,11 @@ def resume_plan(session_id: str, record: dict | None, state: str) -> dict:
     return {"kind": "resume", "command": resume, "note": None, "alternatives": [fork]}
 
 
+def attn_state(view: dict) -> str:
+    """How a session counts in an attention roll-up: a silenced `needs you` is SNOOZED."""
+    return SNOOZED if view.get("snoozed") else view["state"]
+
+
 @dataclass
 class Snapshot:
     now: datetime
@@ -166,6 +172,8 @@ class App:
             "hidden": False,  # yours, and only on the runtime record: see RuntimeStore.set_hidden
             "state": UNKNOWN,
             "attention": None,
+            "snoozed": False,  # this attention silenced on purpose: see RuntimeStore.snooze
+            "snooze_until": None,
             "last_event": None,
             "updated_at": None,
             "cwd": None,
@@ -183,10 +191,16 @@ class App:
         if rec:
             state = effective_state(rec, snap.now)
             plan = resume_plan(sid, rec, state)
+            # A snooze only ever silences a live *needs you*. It stays on the record while the
+            # state is something else -- a subagent still working under a finished turn is the
+            # same attention coming back -- but it is not reported, and nothing goes quiet for it.
+            snoozed = state == NEEDS_YOU and is_snoozed(rec, snap.now)
             view.update(
                 state=state,
                 hidden=bool(rec.get("hidden")),
                 attention=rec.get("attention") if state == NEEDS_YOU else None,
+                snoozed=snoozed,
+                snooze_until=rec.get("snooze_until") if snoozed else None,
                 last_event=rec.get("last_event"),
                 updated_at=rec.get("updated_at"),
                 cwd=rec.get("cwd"),
@@ -223,7 +237,7 @@ class App:
             "created": item.created,
             "updated": item.updated,
             "sessions": sessions,
-            "attention": aggregate_attention([s["state"] for s in sessions]),
+            "attention": aggregate_attention([attn_state(s) for s in sessions]),
             "has_ai_state": item.ai_state is not None,
             "context_count": len(item.context),
             "children": [c.id for c in snap.items if c.parent == item.id],
@@ -313,7 +327,7 @@ class App:
                 return []
             seen.add(item_id)
             s = summaries[item_id]
-            states = [sv["state"] for sv in s["sessions"]]
+            states = [attn_state(sv) for sv in s["sessions"]]
             for child in s["children"]:
                 states += rollup_states(child, seen)
             return states
@@ -582,6 +596,36 @@ class App:
         changed = self.runtime.set_hidden_many([str(i) for i in ids], hidden)
         return {"hidden": hidden, "sessions": changed, "count": len(changed)}
 
+    def snooze_sessions(self, body: dict) -> dict:
+        """Silence the attention on some sessions for a while -- or wake them now.
+
+        A turn that finished needs you, and keeps saying so on every card it sits on.
+        Once you have read it and know you are not getting to it before lunch, that is
+        no longer information: it is noise on top of the cards that do need you. Snooze
+        for `minutes` (0 wakes them again) and they stop counting: the sessions stay in
+        `needs_you`, the rail still lists them and says until when, and the cards go
+        quiet. One request for a card's worth of them, so the UI has one Undo.
+
+        It silences *this* attention only -- the hook drops the snooze the moment the
+        session's state changes, so a new prompt, a fresh permission request or the next
+        finished turn rings straight away (see RuntimeStore._fold).
+        """
+        ids = body.get("session_ids")
+        if not isinstance(ids, list) or not ids:
+            raise ApiError(400, "session_ids must be a non-empty list")
+        if len(ids) > 1000:
+            raise ApiError(400, "too many sessions in one request")
+        minutes = body.get("minutes", 0)
+        if isinstance(minutes, bool) or not isinstance(minutes, (int, float)):
+            raise ApiError(400, "minutes must be a number")
+        cap = int(SNOOZE_MAX.total_seconds() // 60)
+        if minutes < 0 or minutes > cap:
+            raise ApiError(400, f"minutes must be between 0 (wake) and {cap}")
+        until = utc_now() + timedelta(minutes=minutes) if minutes else None
+        changed = self.runtime.snooze([str(i) for i in ids], until)
+        return {"minutes": minutes, "until": iso(until) if until else None,
+                "sessions": changed, "count": len(changed)}
+
     def resume(self, sid: str) -> dict:
         if not _ID_RE.match(sid):
             raise ApiError(400, "bad session id")
@@ -608,6 +652,7 @@ class App:
         ("DELETE", r"^/api/items/([^/]+)/sessions/([^/]+)$", "detach_session"),
         ("GET", r"^/api/sessions$", "recent_sessions"),
         ("POST", r"^/api/sessions/hide$", "hide_sessions"),
+        ("POST", r"^/api/sessions/snooze$", "snooze_sessions"),
         ("PATCH", r"^/api/sessions/([^/]+)$", "hide_session"),
         ("GET", r"^/api/sessions/([^/]+)/resume$", "resume"),
     )

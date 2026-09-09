@@ -63,7 +63,11 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .app{display:grid;grid-template-columns:288px 1fr;grid-template-rows:46px 1fr;height:100vh;width:100vw}
 .topbar{grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:0 14px 0 16px;background:var(--surface);border-bottom:1px solid var(--line);z-index:5}
 .brand{font-family:var(--serif);font-style:italic;font-size:21px;letter-spacing:-.01em;color:var(--ink);margin-right:6px}
-.crumb{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:6px;color:var(--muted);max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .15s,color .15s}
+/* Chips and crumbs are flex boxes, so their label carries the ellipsis (see `ellip` in app.js):
+   `text-overflow` on a flex container does nothing at all -- there is no line box for the ellipsis
+   to sit on -- and a long name came out sliced mid-word with the rounded end of the pill cut off. */
+.ellip{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.crumb{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:6px;color:var(--muted);max-width:260px;white-space:nowrap;overflow:hidden;transition:background .15s,color .15s}
 .crumb:hover{background:var(--raised);color:var(--ink)}
 .crumb-sep{color:var(--faint);font-size:12px}
 .topbar .repo{font-family:var(--mono);font-size:11px;color:var(--muted);padding:3px 8px;border:1px solid var(--line);border-radius:6px}
@@ -112,7 +116,7 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .srow .m .ago{margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap}
 /* the cards a session sits on: one chip each, since a session can be on several; a click goes to that card */
 .srow .wheres{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px;min-width:0}
-.srow .where{display:inline-flex;align-items:center;gap:4px;padding:2px 7px 2px 6px;border-radius:5px;font-size:11px;background:var(--accent-soft);color:var(--accent-ink);max-width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.srow .where{display:inline-flex;align-items:center;gap:4px;padding:2px 7px 2px 6px;border-radius:5px;font-size:11px;background:var(--accent-soft);color:var(--accent-ink);max-width:100%;min-width:0;overflow:hidden;white-space:nowrap}
 .srow .where[data-id]{cursor:pointer}
 .srow .where[data-id]:hover{text-decoration:underline}
 .srow .where.none{background:transparent;border:1px dashed var(--line-2);color:var(--muted)}
@@ -122,6 +126,9 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .srow:hover .where.act.onhover,.srow:focus-within .where.act.onhover,.srow .where.act.onhover:focus-visible{opacity:1}
 .srow.tucked .t,.srow.tucked .p,.srow.tucked .m{opacity:.55}  /* listed only because you asked to see the hidden ones */
 .srow .where .glyph{transform:scale(.85)}
+.srow .where.act.zzed{border-style:solid;gap:5px}
+.srow .where.act.zzed svg{width:10px;height:10px;color:var(--attn)}
+.srow.snoozed .t{color:var(--ink-2)}  /* read, and parked on purpose: one step back from the ones you have not */
 .rail-empty{padding:18px 12px;color:var(--faint);font-size:12px;text-align:center}
 .rail-bulk{display:flex;gap:6px;margin:10px 8px 2px}
 .rail-bulk button{flex:1;padding:6px 8px;border:1px dashed var(--line-2);border-radius:8px;font-size:11.5px;color:var(--muted);text-align:center;transition:color .15s,border-color .15s}
@@ -143,6 +150,10 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 @keyframes breathe{0%,100%{opacity:1}50%{opacity:.35}}
 .dot.ready{background:var(--ready)}
 .dot.ended,.dot.inactive{background:transparent;border:1.5px solid var(--idle)}
+/* snoozed: still the attention colour, hollow instead of filled, and no ring -- the session
+   needs you, you have said not now, and nothing about it is pulsing at you any more */
+.dot.needs_you.snoozed{background:transparent;border:1.5px solid var(--attn)}
+.dot.needs_you.snoozed::after{display:none}
 
 /* ---------- lifecycle glyphs ---------- */
 .glyph{width:10px;height:10px;border-radius:50%;flex:none;display:inline-grid;place-items:center;position:relative}
@@ -169,6 +180,7 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .area-meta{font-size:12px;color:var(--muted);display:flex;gap:10px;align-items:center}
 .area-meta .a{color:var(--attn-ink);font-weight:600;display:inline-flex;align-items:center;gap:5px}
 .area-meta .w{color:var(--work);font-weight:600;display:inline-flex;align-items:center;gap:5px}
+.area-meta .z{color:var(--muted);display:inline-flex;align-items:center;gap:5px}
 .area-add{margin-left:auto;width:26px;height:26px;border-radius:7px;border:1px dashed var(--line-2);color:var(--muted);display:grid;place-items:center;font-size:16px;line-height:1;transition:all .15s}
 .area-add:hover{border-style:solid;color:var(--ink);background:var(--surface)}
 .cols{display:flex;gap:22px;padding:66px 28px 30px;align-items:flex-start;min-height:130px}
@@ -189,8 +201,31 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .card.collapsed::after{content:"";position:absolute;left:6px;right:6px;bottom:-4px;height:8px;border:1px solid var(--line);border-top:0;border-radius:0 0 10px 10px;background:var(--raised);z-index:-1}
 .kids-list > .card.collapsed,.col > .card.collapsed{margin-bottom:6px} /* room for the deck edge */
 .card.collapsed .stack2{position:absolute;left:12px;right:12px;bottom:-7px;height:6px;border:1px solid var(--line);border-top:0;border-radius:0 0 9px 9px;background:var(--bg);z-index:-2;opacity:.9}
-.card.attn{border-color:var(--attn);box-shadow:0 0 0 2px var(--attn-glow),0 0 22px -4px var(--attn-glow),var(--shadow-1)}
-.card.attn.selected{box-shadow:0 0 0 2px var(--attn-glow),0 0 22px -4px var(--attn-glow),var(--shadow-2)}
+/* A card that needs you is circled: the attention colour on the border, a soft band of it just
+   inside, a wash bleeding further in, and a ring over the whole edge that brightens and fades --
+   readable across the canvas at any zoom, and the only thing on the board that moves that slowly.
+
+   Every part of it paints *inside* the card's own box, and that is not a style choice. A nested
+   card lives in its parent's `.kids > div`, which is `overflow: hidden` for the collapse
+   animation, and inside that clip box a child has 18px of room on the left, 3px above and below,
+   and none at all on the right -- so an outward ring came out sliced flat down its right-hand
+   side, and looked like a panel drawn too narrow. There is no room to be had either: a nested
+   card sits 14px from its parent's border, less than the glow alone.
+
+   `.ring` is a real element rather than a pseudo-element because the card already spends ::after
+   on the collapsed deck edge and ::before on the drop hint, and one card can be all three. */
+.card.attn{border-color:var(--attn);box-shadow:inset 0 0 0 4px var(--attn-soft),inset 0 0 18px -4px var(--attn-glow),var(--shadow-1)}
+.card.attn.selected{box-shadow:inset 0 0 0 4px var(--attn-soft),inset 0 0 18px -4px var(--attn-glow),var(--shadow-2)}
+.card.attn > .ring{position:absolute;inset:0;border-radius:inherit;border:2px solid var(--attn);pointer-events:none;animation:edgering 2.4s ease-in-out infinite}
+@keyframes edgering{0%,100%{opacity:.22}50%{opacity:1}}
+/* the snooze crescent: on a ringing card it is the off-switch, and it is not hidden until hover --
+   the point of the ring is that you can act on it the moment you see it */
+.zz{flex:none;width:20px;height:20px;margin:-2px 0;border-radius:6px;color:var(--attn-ink);display:grid;place-items:center;transition:background .15s,color .15s}
+.zz svg{width:13px;height:13px}
+.zz:hover,.zz.open{background:var(--attn-soft);color:var(--attn-ink)}
+.card .badge.zzed{background:transparent;border:1px solid var(--line-2);color:var(--muted);font-weight:500;padding:1px 7px 1px 6px;cursor:pointer;transition:color .15s,border-color .15s}
+.card .badge.zzed:hover{color:var(--ink);border-color:var(--muted)}
+.card .badge.zzed svg{width:11px;height:11px;color:var(--attn)}
 .card.done{background:var(--raised)}
 .card.done > .card-head .title{color:var(--muted);text-decoration:line-through;text-decoration-color:var(--line-2)}
 .card.parked{border-style:dashed}
@@ -209,11 +244,12 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .tog svg{width:10px;height:10px;transition:transform .2s var(--ease);transform:rotate(90deg)}
 .card.collapsed .tog svg{transform:rotate(0)}
 .card-row{display:flex;align-items:center;gap:6px;margin-top:10px;flex-wrap:wrap}
-.sess{display:inline-flex;align-items:center;gap:6px;padding:3px 9px 3px 7px;border-radius:999px;font-size:11.5px;color:var(--ink-2);background:var(--raised);border:1px solid var(--line);max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sess{display:inline-flex;align-items:center;gap:6px;padding:3px 9px 3px 7px;border-radius:999px;font-size:11.5px;color:var(--ink-2);background:var(--raised);border:1px solid var(--line);max-width:100%;min-width:0;white-space:nowrap;overflow:hidden}
 .sess.needs_you{background:var(--attn-soft);border-color:transparent;color:var(--attn-ink);font-weight:500}
 .sess.working{background:var(--work-soft);border-color:transparent;color:var(--work)}
 .sess.ready{background:var(--ready-soft);border-color:transparent;color:var(--ready)}
 .sess.ended,.sess.inactive{color:var(--muted)}
+.sess.needs_you.snoozed{background:transparent;border-color:var(--line-2);color:var(--muted);font-weight:400}
 .sess .dot{width:6px;height:6px}
 .card .sess[data-sid]{cursor:grab}
 .card .sess[data-sid]:active{cursor:grabbing}
@@ -255,7 +291,7 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .fold.open svg{transform:rotate(90deg)}
 .insline{position:absolute;height:2px;background:var(--accent);border-radius:1px;pointer-events:none;z-index:30;display:none}
 .insline::before{content:"";position:absolute;left:-4px;top:-3px;width:8px;height:8px;border-radius:50%;background:var(--accent)}
-.ghost{position:fixed;z-index:100;pointer-events:none;transform:translate(-10px,-50%);background:var(--surface);border:1px solid var(--line-2);box-shadow:var(--shadow-2);border-radius:9px;padding:6px 11px 6px 9px;font-weight:500;font-size:12.5px;display:flex;gap:7px;align-items:center;max-width:280px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:transform .18s var(--ease),opacity .18s}
+.ghost{position:fixed;z-index:100;pointer-events:none;transform:translate(-10px,-50%);background:var(--surface);border:1px solid var(--line-2);box-shadow:var(--shadow-2);border-radius:9px;padding:6px 11px 6px 9px;font-weight:500;font-size:12.5px;display:flex;gap:7px;align-items:center;max-width:280px;white-space:nowrap;overflow:hidden;transition:transform .18s var(--ease),opacity .18s}
 .ghost.going-in{transform:translate(-10px,-50%) scale(.88);opacity:.8}
 .ghost .n{color:var(--muted);font-weight:400;font-size:11.5px}
 
@@ -304,6 +340,16 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .attn-call{margin-top:10px;display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;background:var(--attn-soft);color:var(--attn-ink);font-size:12px}
 .attn-call b{font-weight:600}
 .attn-call button{margin-left:auto;padding:4px 9px;border-radius:6px;background:var(--attn);color:var(--on-attn);font-weight:500;font-size:11.5px}
+.attn-call button + button{margin-left:6px}
+.attn-call .zz{background:transparent;padding:0;color:var(--attn-ink)}
+.attn-call .zz:hover,.attn-call .zz.open{background:rgba(0,0,0,.06)}
+/* snoozed: the same row, told quietly -- it still needs you, and says when it comes back */
+.attn-call.quiet{background:var(--raised);color:var(--muted);border:1px solid var(--line)}
+.attn-call.quiet b{color:var(--ink-2)}
+.attn-call.quiet button{background:transparent;border:1px solid var(--line-2);color:var(--ink-2)}
+.attn-call.quiet button:hover{border-color:var(--muted);color:var(--ink)}
+.ins-sess .mini.zz{width:auto;height:auto;min-width:20px;gap:4px;padding:3px 6px;display:inline-flex;align-items:center;color:var(--muted)}
+.ins-sess .mini.zz svg{width:11px;height:11px;color:var(--attn)}
 .ins-sess{display:grid;grid-template-columns:12px 1fr auto;gap:8px 9px;align-items:start;padding:8px 6px;border-radius:8px;margin:0 -6px}
 .ins-sess:hover{background:var(--raised)}
 .ins-sess .dot{margin-top:4px}
@@ -398,6 +444,10 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .pop-i{text-align:left;padding:7px 9px;border-radius:7px;font-size:12.5px;color:var(--ink);white-space:nowrap}
 .pop-i:hover{background:var(--raised)}
 .pop-sep{height:1px;background:var(--line);margin:4px 2px}
+/* sentence case and wrapping, not a shouted label: this heading carries a session's own name,
+   which is often "Untitled · aaaa1111" -- uppercased and clipped to one line it read as noise */
+.pop-h{padding:7px 9px 5px;max-width:230px;font-size:11.5px;font-weight:600;line-height:1.35;color:var(--ink-2);white-space:normal;overflow-wrap:anywhere}
+.pop-n{padding:4px 9px 5px;max-width:230px;font-size:11.5px;line-height:1.4;color:var(--muted);white-space:normal}
 .pop-i.harm{color:#B4432E}
 .pop-i.harm:hover{background:rgba(180,67,46,.12)}
 
@@ -467,3 +517,11 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 /* session identity: Claude Code's own title carries the row, its last prompt sits under it */
 .srow .p,.ins-sess .p{margin-top:3px;font-size:11.5px;line-height:1.35;color:var(--faint);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
 .srow .m .sid{font-family:var(--mono);font-size:10.5px;color:var(--faint)}
+
+/* Someone who has asked for less motion still needs to see which card is asking for them: the
+   ring, the pulsing dot and the breathing dot all fall back to their solid selves. */
+@media (prefers-reduced-motion:reduce){
+  .card.attn > .ring{animation:none;opacity:.8}
+  .dot.needs_you::after{animation:none;opacity:.5}
+  .dot.working{animation:none}
+}

@@ -704,8 +704,173 @@ def test_hiding_sessions_clears_the_unattached_list(server):
         js = res.read().decode()
     assert "function railRows(" in js and "state.showHidden" in js and "function hideSessions(" in js
     assert "Hide all ${unhidden.length}" in js, "one gesture for a list full of old sessions"
-    assert "hidden · show" in js and "Unhide all ${tucked}" in js, "and the ways back"
+    assert "· show ${tucked === 1 ? 'it' : 'them'}" in js and "Unhide all ${tucked}" in js, "and the ways back"
     with urllib.request.urlopen(server["url"] + "/static/style.css", timeout=10) as res:
         css = res.read().decode()
     assert any(line.startswith(".srow .where.act{") for line in css.splitlines())
     assert any(line.startswith(".rail-bulk{") for line in css.splitlines())
+
+
+def test_snoozing_a_session_quietens_its_cards_without_losing_it(server):
+    """A finished turn needs you and says so on every card it sits on. Once you have read
+    it and know you are not getting to it now, the ring is noise on top of the cards that
+    do need you -- so it can be silenced for an hour, three, or a day. The session does not
+    change: it stays `needs_you`, every list still has it, and it says how long is left.
+    What changes is the counting -- the roll-up that makes a card ring."""
+    call, cfg, repo = server["call"], server["config"], server["repo"]
+    rt = RuntimeStore(cfg.runtime_dir)
+    now = datetime.now(timezone.utc)
+    rt.record_event({"session_id": "s-read", "hook_event_name": "Stop", "cwd": str(repo["repo"])}, now=now)
+    rt.record_event({"session_id": "s-blocked", "hook_event_name": "PermissionRequest", "tool_name": "Bash",
+                     "cwd": str(repo["repo"])}, now=now)
+    assert call("POST", "/api/areas", {"name": "Ranking"})[0] == 200
+    card = call("POST", "/api/items", {"name": "Survey", "area": "Ranking"})[1]
+    for sid in ("s-read", "s-blocked"):
+        assert call("POST", f"/api/items/{card['id']}/sessions", {"session_id": sid})[0] == 200
+
+    def row(sid):
+        return next(s for s in call("GET", "/api/overview")[1]["sessions"] if s["id"] == sid)
+
+    def rollup():
+        return next(i for i in call("GET", "/api/overview")[1]["items"] if i["id"] == card["id"])["rollup"]
+
+    assert (row("s-read")["snoozed"], row("s-read")["snooze_until"]) == (False, None)
+    assert rollup()["level"] == "needs_you" and rollup()["needs_you"] == 2
+
+    status, body = call("POST", "/api/sessions/snooze", {"session_ids": ["s-read"], "minutes": 180})
+    assert status == 200 and body["count"] == 1 and body["sessions"] == ["s-read"] and body["minutes"] == 180
+    assert body["until"].endswith("Z")
+    r = row("s-read")
+    assert r["state"] == "needs_you" and r["attention"] == "review", "the session is exactly as it was"
+    assert r["snoozed"] is True and r["snooze_until"] == body["until"], "and says until when"
+    agg = rollup()
+    assert (agg["needs_you"], agg["snoozed"]) == (1, 1), "the silenced one is counted apart, not dropped"
+    assert agg["level"] == "needs_you", "the card still rings: the other session is blocked on you"
+    assert call("GET", f"/api/items/{card['id']}")[1]["attention"]["snoozed"] == 1, "and on the card's own endpoint"
+
+    # silence the second one too and the card goes quiet, with both sessions still there
+    assert call("POST", "/api/sessions/snooze", {"session_ids": ["s-read", "s-blocked"], "minutes": 60})[1]["count"] == 2
+    agg = rollup()
+    assert agg["level"] is None and (agg["needs_you"], agg["snoozed"], agg["sessions"]) == (0, 2, 2)
+
+    # a snooze is stored on the session's own record, next to `hidden`
+    rec = json.loads((cfg.runtime_dir / "sessions" / "s-read.json").read_text())
+    assert rec["snooze_until"].endswith("Z") and rec["state"] == "needs_you"
+
+    # ...and it silences that attention only: the next prompt ends the quiet at once
+    rt.record_event({"session_id": "s-read", "hook_event_name": "UserPromptSubmit", "cwd": str(repo["repo"])}, now=now)
+    assert row("s-read")["snoozed"] is False
+    assert "snooze_until" not in json.loads((cfg.runtime_dir / "sessions" / "s-read.json").read_text())
+
+    # waking is the same request with no time on it
+    assert call("POST", "/api/sessions/snooze", {"session_ids": ["s-blocked"], "minutes": 0})[1]["until"] is None
+    assert row("s-blocked")["snoozed"] is False and rollup()["level"] == "needs_you"
+
+    # a session the hook has never seen is skipped rather than failing the batch
+    assert call("POST", "/api/sessions/snooze",
+                {"session_ids": ["s-blocked", "s-nobody"], "minutes": 60})[1]["sessions"] == ["s-blocked"]
+
+    # bad asks
+    assert call("POST", "/api/sessions/snooze", {"session_ids": [], "minutes": 60})[0] == 400
+    assert call("POST", "/api/sessions/snooze", {"minutes": 60})[0] == 400
+    assert call("POST", "/api/sessions/snooze", {"session_ids": ["s-read"], "minutes": -5})[0] == 400
+    assert call("POST", "/api/sessions/snooze", {"session_ids": ["s-read"], "minutes": 99999})[0] == 400, "capped"
+    assert call("POST", "/api/sessions/snooze", {"session_ids": ["s-read"], "minutes": "1h"})[0] == 400
+    assert call("POST", "/api/sessions/snooze", {"session_ids": ["s-read"], "minutes": True})[0] == 400
+
+    # the page offers the three lengths, on the card and in the panel, and can wake them again
+    with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
+        js = res.read().decode()
+    assert "const SNOOZE_OPTS = [['1 hour', 60], ['3 hours', 180], ['1 day', 1440]];" in js
+    assert "function openSnoozeMenu(" in js and "function snoozeSessions(" in js
+    assert "'/api/sessions/snooze'" in js
+    assert "'data-act': 'snooze'" in js and "'data-act': 'wake'" in js, "the off-switch, and the way back"
+    assert "if (loud) el.appendChild(h('i', { class: 'ring'" in js, "a card that needs you is circled"
+    with urllib.request.urlopen(server["url"] + "/static/style.css", timeout=10) as res:
+        css = res.read().decode()
+    lines = css.splitlines()
+    assert any(line.startswith(".card.attn > .ring{") for line in lines), "the ring is drawn"
+    assert any(line.startswith("@keyframes edgering{") for line in lines), "and it pulses"
+    assert any(line.startswith(".dot.needs_you.snoozed{") for line in lines), "a silenced dot stops ringing"
+    assert any(line.startswith(".zz{") for line in lines)
+    assert "@media (prefers-reduced-motion:reduce){" in css, "and the motion can be turned off"
+
+
+def test_a_chip_ends_in_an_ellipsis_rather_than_mid_word(server):
+    """`text-overflow: ellipsis` does nothing on a flex container.
+
+    There is no line box for the ellipsis to sit on -- the children are flex items -- so the
+    declaration is silently ignored and `overflow: hidden` clips the label instead: a long card
+    name came out sliced mid-word with the rounded end of the pill cut off, which read as a
+    panel drawn too narrow. Twenty-one of the eighty-two chips on a real board did it.
+
+    The fix is one element: the label goes in its own inline box, which can elide. This guards
+    both halves -- that the label is wrapped, and that no chip goes back to declaring the
+    ellipsis on the flex box itself, where it would look fixed and not be.
+    """
+    with urllib.request.urlopen(server["url"] + "/static/style.css", timeout=10) as res:
+        css = res.read().decode()
+    with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
+        js = res.read().decode()
+
+    assert any(line.startswith(".ellip{") for line in css.splitlines()), "the label class is served"
+    ellip = next(line for line in css.splitlines() if line.startswith(".ellip{"))
+    for prop in ("text-overflow:ellipsis", "overflow:hidden", "white-space:nowrap", "min-width:0"):
+        assert prop in ellip, f"{prop} is what makes the ellipsis appear"
+
+    # no rule may set the ellipsis on a flex box: it is inert there, and hides the real bug
+    inert = [
+        line.split("{")[0]
+        for line in css.splitlines()
+        if "text-overflow:ellipsis" in line and ("display:flex" in line or "display:inline-flex" in line)
+    ]
+    assert inert == [], f"these declare an ellipsis a flex container can never draw: {inert}"
+
+    # and every chip that can hold a long name wraps it
+    for builder in (
+        "h('i', { class: `dot ${s.state}${zz ? ' snoozed' : ''}` }), ellip(sessTitle(s))",   # on a card
+        "h('i', { class: `glyph ${lifecycle(card)}` }), ellip(card.name)",                   # in the rail
+        "'data-id': pid }, ellip(cardById(pid).name))",                                     # the breadcrumb
+        "h('i', { class: `glyph ${lifecycle(c)}` }), ellip(c.name)",                        # the card ghost
+        "h('i', { class: 'dot ' + s.state }), ellip(sessTitle(s))",                          # the session ghost
+    ):
+        assert builder in js, f"unwrapped label: {builder}"
+
+
+def test_a_nested_card_wears_its_whole_ring(server):
+    """A card that needs you is circled, and a nested one has nowhere to put an outward ring.
+
+    Children live in their parent's `.kids > div`, which is `overflow: hidden` so the collapse
+    can animate its height. Inside that clip box a child has 18px of room on the left, 3px above
+    and below, and none at all on the right -- so a ring drawn outside the card came out sliced
+    flat down its right-hand side. Nor is there room to be found: a nested card sits 14px from
+    its parent's border, less than the glow alone.
+
+    So the whole treatment paints inside the card's own box, which this pins down: no attention
+    colour in an outward shadow, no negative inset on the ring, and no pulse that grows out of
+    the box it lives in.
+    """
+    with urllib.request.urlopen(server["url"] + "/static/style.css", timeout=10) as res:
+        css = res.read().decode()
+    lines = css.splitlines()
+
+    def rule(prefix):
+        return next(line for line in lines if line.startswith(prefix))
+
+    # the constraint this all exists for -- if it ever goes, the rest can be revisited
+    assert "overflow:hidden" in rule(".kids > div{"), "the parent clips its children; that is why the ring is inset"
+
+    for prefix in (".card.attn{", ".card.attn.selected{"):
+        shadows = rule(prefix).split("box-shadow:")[1].rstrip("}")
+        for layer in shadows.split(","):
+            if "attn" in layer:
+                assert "inset" in layer, f"{prefix} paints the attention colour outside the card: {layer.strip()}"
+
+    ring = rule(".card.attn > .ring{")
+    assert "inset:0" in ring, f"the ring must sit inside the card's own box: {ring}"
+    assert "-" not in ring.split("inset:")[1].split(";")[0], "a negative inset puts the ring where the parent clips it"
+    assert "border-radius:inherit" in ring, "so it follows the card's corners at any nesting depth"
+
+    pulse = css.split("@keyframes edgering{")[1].split("}\n")[0]
+    assert "scale(" not in pulse, f"a growing pulse leaves the box and gets clipped: {pulse}"
+    assert "opacity" in pulse, "the pulse is a brightening edge, which cannot overflow anything"

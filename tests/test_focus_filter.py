@@ -104,6 +104,17 @@ def test_hide_done_never_swallows_a_card_asking_for_you(tmp_path):
 
 
 @node
+def test_a_snoozed_card_is_no_longer_the_one_the_filter_must_keep(tmp_path):
+    """The filter never swallows a card asking for you. Snoozing is you saying it is not
+    asking any more -- so a done card kept only by that ring drops out like any other, and
+    the rail is where it can still be found and woken."""
+    needy = {"id": "s1", "item": "c1", "state": "needs_you"}
+    assert "c1" in run(tmp_path, TREE, "done", sessions=[needy])["visible"]
+    quiet = run(tmp_path, TREE, "done", sessions=[{**needy, "snoozed": True}])
+    assert "c1" not in quiet["visible"]
+
+
+@node
 def test_a_deep_survivor_pulls_its_whole_chain_through(tmp_path):
     deep = [
         {"id": "p", "parent": None, "area": "Work", "lifecycle": "done"},

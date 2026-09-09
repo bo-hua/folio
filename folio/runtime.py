@@ -2,9 +2,10 @@
 
 One small JSON file per session under <data>/runtime/sessions/. Only metadata
 is stored: session id, coarse state, timestamps, cwd, permission mode, pid, the
-path of Claude Code's own transcript, and the one field a person writes --
+path of Claude Code's own transcript, and the two fields a person writes --
 `hidden`, set when you tuck a session out of the rail's Unattached list (see
-`set_hidden`). Never prompts, responses, tool arguments, transcript *contents*
+`set_hidden`), and `snooze_until`, set when you silence an attention you have
+read but cannot get to yet (see `snooze`). Never prompts, responses, tool arguments, transcript *contents*
 or code -- `transcript.py` reads the session's title out of that file at request
 time and hands it straight to the UI.
 
@@ -34,7 +35,12 @@ ENDED = "ended"  # graceful SessionEnd
 INACTIVE = "inactive"  # derived: stale or process gone
 UNKNOWN = "unknown"  # derived: never observed by the hook
 
+# Not a state: a `needs_you` you have read and silenced on purpose (see RuntimeStore.snooze).
+# Only the attention roll-up sees it -- the session itself stays in NEEDS_YOU.
+SNOOZED = "snoozed"
+
 STALE_AFTER = timedelta(hours=12)
+SNOOZE_MAX = timedelta(days=7)  # longer than a snooze is: past this, deal with the session
 _WORKING_EVENTS = {
     "UserPromptSubmit",
     "PreToolUse",
@@ -156,6 +162,30 @@ def subagent_busy(record: dict) -> bool:
     return main_at is None or agent_at > main_at
 
 
+def snooze_left(record: dict, now: datetime | None = None) -> timedelta | None:
+    """How long this session's attention stays silenced, or None when it is not silenced.
+
+    A finished turn is *needs you*, and rightly so -- but once you have read it and
+    cannot get to it, every card it sits on goes on ringing for nothing you are going
+    to do about it now. A snooze says "I know, not yet": the session keeps its state
+    and the rail keeps listing it, while the roll-ups stop counting it (see
+    `aggregate_attention`) so its cards go quiet until the time is up.
+
+    It silences *this* attention, not the session: `_fold` drops the snooze the moment
+    the stored state or reason changes, so the next thing that needs you rings even if
+    you silenced the last one for a day.
+    """
+    until = parse_iso(record.get("snooze_until"))
+    if until is None:
+        return None
+    now = now or utc_now()
+    return until - now if until > now else None
+
+
+def is_snoozed(record: dict, now: datetime | None = None) -> bool:
+    return snooze_left(record, now) is not None
+
+
 def is_spare(record: dict) -> bool:
     """A background session Claude Code started ahead of time and nobody has prompted yet.
 
@@ -221,11 +251,18 @@ def is_live(record: dict, state: str) -> bool:
 
 
 def aggregate_attention(states: list[str]) -> dict:
-    """Item-level roll-up across attached sessions."""
+    """Item-level roll-up across attached sessions.
+
+    A session whose attention you snoozed arrives as the pseudo-state SNOOZED. It
+    counts as neither needing you nor working -- that is the point, the card goes
+    quiet -- but it is counted rather than dropped, so the UI can still say the
+    attention is there and when it comes back.
+    """
     needs = sum(1 for s in states if s == NEEDS_YOU)
     working = sum(1 for s in states if s == WORKING)
+    snoozed = sum(1 for s in states if s == SNOOZED)
     level = NEEDS_YOU if needs else WORKING if working else None
-    return {"level": level, "needs_you": needs, "working": working, "sessions": len(states)}
+    return {"level": level, "needs_you": needs, "working": working, "snoozed": snoozed, "sessions": len(states)}
 
 
 class RuntimeStore:
@@ -313,6 +350,11 @@ class RuntimeStore:
         }
         result = transition(event, record.get("state"))
         if result is not None:
+            if result != (record.get("state"), record.get("attention")):
+                # A snooze silences one attention, not the session. Anything that moves the
+                # session on -- you answered the prompt, another turn finished, a fresh
+                # permission request came in -- you have not seen, so it rings again.
+                record.pop("snooze_until", None)
             record["state"], record["attention"] = result
         record["last_event"] = event.get("hook_event_name")
         record["updated_at"] = iso(now)
@@ -396,6 +438,36 @@ class RuntimeStore:
                 sid = str(sid or "")
                 if _SAFE_ID.match(sid) and self._set_hidden(sid, bool(hidden)):
                     done.append(sid)
+        return done
+
+    def snooze(self, session_ids: Iterable[str], until: datetime | None) -> list[str]:
+        """Silence (or wake) the attention on these sessions, under one lock.
+
+        `until` is when they start counting again; None wakes them now. Snoozing a
+        card's sessions is one gesture, so it is one call -- and one Undo. Like
+        `hidden`, this is a field a person sets and it lives with the session's own
+        record: it is only ever about this session and should die with it.
+
+        Returns the ids that exist and are now in the asked-for state; ids the hook
+        has never seen are skipped rather than failing the lot.
+        """
+        value = iso(until) if until is not None else None
+        done = []
+        with self.locked():
+            for sid in session_ids:
+                sid = str(sid or "")
+                if not _SAFE_ID.match(sid):
+                    continue
+                record = self.get(sid)
+                if record is None:
+                    continue
+                if record.get("snooze_until") != value:  # already so: leave the file alone
+                    if value is None:
+                        record.pop("snooze_until", None)
+                    else:
+                        record["snooze_until"] = value
+                    self._write(record)
+                done.append(sid)
         return done
 
     def prune_ended(self, older_than: timedelta = timedelta(days=7), now: datetime | None = None) -> int:

@@ -42,8 +42,16 @@ function h(tag, attrs = {}, ...kids) {
   for (const k of kids.flat(Infinity)) if (k != null && k !== false) e.append(k.nodeType ? k : document.createTextNode(String(k)));
   return e;
 }
+// A label inside a flex chip. `text-overflow` needs a line box to put the ellipsis on, and a flex
+// container has none -- its children are flex items -- so an ellipsis declared on the chip itself
+// never appears: a long name is sliced mid-word and takes the pill's rounded end with it. Giving
+// the label its own inline box gets the ellipsis back. See `.ellip` in style.css.
+const ellip = text => h('span', { class: 'ellip' }, text);
 const chevron = () => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 10 10'); s.innerHTML = '<path d="M3 1.5 6.5 5 3 8.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>'; return s; };
 const copyIcon = () => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 14 14'); s.setAttribute('aria-hidden', 'true'); s.innerHTML = '<rect x="4.75" y="4.75" width="7.5" height="7.5" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M9.25 4.75V3.2A1.45 1.45 0 0 0 7.8 1.75H3.2A1.45 1.45 0 0 0 1.75 3.2v4.6A1.45 1.45 0 0 0 3.2 9.25h1.55" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>'; return s; };
+// A snooze is a crescent, wherever it appears: the button that silences a ringing card, and the
+// quiet badge that says a card is silenced and for how much longer.
+const moonIcon = () => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 14 14'); s.setAttribute('aria-hidden', 'true'); s.innerHTML = '<path d="M11.1 8.9A4.7 4.7 0 0 1 5.1 2.9 4.7 4.7 0 1 0 11.1 8.9Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>'; return s; };
 const COPY_TIP = 'Copy for Claude — the card’s name, notes, sessions, children and parents as one block to paste into a prompt. The session you paste it into attaches itself to this card.';
 const cardById = id => CARDS.find(c => c.id === id);
 const areaById = id => AREAS.find(a => a.id === id);
@@ -55,6 +63,20 @@ const sessOf = id => SESSIONS.filter(s => s.items.includes(id));
 const sessById = id => SESSIONS.find(s => s.id === id);
 const cardsOf = s => s.items.map(cardById).filter(Boolean); // the cards it is on that the page knows about
 const otherCardsOf = (s, except) => cardsOf(s).filter(c => c.id !== except);
+// --- snooze. A finished turn needs you, and says so on every card it sits on. Once you have
+// read it and know you are not getting to it before lunch, that is no longer information: it is
+// noise on top of the cards that do need you. Snoozing silences one attention -- the session
+// stays `needs_you`, the rail still lists it and says until when, and only the roll-ups below
+// stop counting it, so its cards go quiet. The server drops the snooze the moment the session's
+// state changes, so the next thing that needs you can never be silenced by a snooze you set on
+// the last one; this page only ever asks for one and reads back what the server decided.
+const SNOOZE_OPTS = [['1 hour', 60], ['3 hours', 180], ['1 day', 1440]];
+const SNOOZE_TIP = 'Snooze — you have read it and cannot get to it now. The session still needs you and stays in the list; the card just stops ringing until the time is up, or until the session does something new.';
+const snoozed = s => !!s.snoozed;                            // the server's word, not this browser's clock
+const needy = s => s.state === 'needs_you' && !s.snoozed;    // needs you *and* has not been silenced
+const snoozeLeft = s => Math.max(0, new Date(s.snoozeUntil || 0).getTime() - Date.now());
+// How long until the quiet ends: for a group, when the first of them starts ringing again.
+const snoozeText = ss => ageText(Math.min(...[].concat(ss).map(snoozeLeft)) / 1000);
 const quoteNames = cs => cs.map(c => `“${c.name}”`).join(', ');
 const parents = () => CARDS.filter(c => isVisible(c) && visKidsOf(c.id).length);
 const lifecycle = c => c.lifecycle || 'idea';
@@ -84,7 +106,7 @@ function computeVisible() {
   // swallow a card that is asking for you.
   const keep = c => {
     const kidsKept = kidsOf(c.id).map(keep).includes(true); // map, not some: every child is visited
-    const v = kidsKept || keepOwn(c) || sessOf(c.id).some(s => s.state === 'needs_you');
+    const v = kidsKept || keepOwn(c) || sessOf(c.id).some(needy);
     if (v) VISIBLE.add(c.id);
     return v;
   };
@@ -102,7 +124,13 @@ const railVisible = s => { const cs = cardsOf(s); return !cs.length || cs.some(i
 // row takes it out of this list and nothing else. `tucked` counts what that hid, so the
 // rail can always say so and list them again (see renderRail's line at the bottom).
 function railRows(list, filter, withHidden) {
-  if (filter === 'attention') return { rows: list.filter(s => s.state === 'needs_you'), tucked: 0 };
+  // Needs you leaves out what you snoozed -- silencing it and still being listed under the
+  // one heading you check would make the gesture pointless -- and counts it as `tucked`, so
+  // the line under the list can bring them back the way the hidden ones come back.
+  if (filter === 'attention') {
+    const all = list.filter(s => s.state === 'needs_you');
+    return { rows: withHidden ? all : all.filter(s => !snoozed(s)), tucked: all.filter(snoozed).length };
+  }
   if (filter !== 'unattached') return { rows: list, tucked: 0 };
   const free = list.filter(s => !s.items.length);
   return { rows: withHidden ? free : free.filter(s => !s.hidden), tucked: free.filter(s => s.hidden).length };
@@ -160,7 +188,7 @@ async function load() {
   OV = await api('GET', `/api/overview${state.allRepos ? '?all=1' : ''}`);
   AREAS = OV.areas.map(a => ({ id: a.name, name: a.name, count: a.count }));
   CARDS = OV.items.map(i => ({ id: i.id, name: i.name, area: i.area, parent: i.parent || null, order: i.order, lifecycle: i.lifecycle, human: i.human_status, parkNote: i.park_note || '', hasAi: i.has_ai_state, updated: i.updated }));
-  SESSIONS = OV.sessions.map(s => ({ id: s.id, short: s.short_id, title: s.title || '', autoTitle: s.auto_title || '', prompt: s.last_prompt || '', hidden: !!s.hidden, state: s.state, attention: s.attention, updated: s.updated_at, lastEvent: s.last_event, cwd: s.cwd, branch: s.branch, inRepo: s.in_repo, items: s.items || (s.item ? [s.item] : []), resume: s.resume }));
+  SESSIONS = OV.sessions.map(s => ({ id: s.id, short: s.short_id, title: s.title || '', autoTitle: s.auto_title || '', prompt: s.last_prompt || '', hidden: !!s.hidden, state: s.state, attention: s.attention, snoozed: !!s.snoozed, snoozeUntil: s.snooze_until, updated: s.updated_at, lastEvent: s.last_event, cwd: s.cwd, branch: s.branch, inRepo: s.in_repo, items: s.items || (s.item ? [s.item] : []), resume: s.resume }));
   // Claude Code's pre-started next background session(s): not sessions yet, so the server
   // counts them instead of listing them -- the rail shows one quiet line, never a row.
   SPARES = OV.spares || { standing_by: 0 };
@@ -275,16 +303,30 @@ function showBriefToCopy(c, text) {
 
 // ------------------------------------------------------------------ derived
 function attn(id) {
-  let needs = 0, working = 0, ownNeeds = 0, ownWorking = 0;
+  let needs = 0, working = 0, snooz = 0, ownNeeds = 0, ownWorking = 0, ownSnoozed = 0;
   const seen = new Set(); // a session on both a card and its child is one session, counted once
-  const walk = (cid, own) => { for (const s of sessOf(cid)) { if (seen.has(s.id)) continue; seen.add(s.id); if (s.state === 'needs_you') { needs++; if (own) ownNeeds++; } else if (s.state === 'working') { working++; if (own) ownWorking++; } } for (const k of kidsOf(cid)) walk(k.id, false); };
+  const walk = (cid, own) => { for (const s of sessOf(cid)) { if (seen.has(s.id)) continue; seen.add(s.id); if (needy(s)) { needs++; if (own) ownNeeds++; } else if (snoozed(s)) { snooz++; if (own) ownSnoozed++; } else if (s.state === 'working') { working++; if (own) ownWorking++; } } for (const k of kidsOf(cid)) walk(k.id, false); };
   walk(id, true);
-  return { needs, working, ownNeeds, ownWorking, descNeeds: needs - ownNeeds, descWorking: working - ownWorking };
+  return { needs, working, snoozed: snooz, ownNeeds, ownWorking, ownSnoozed, descNeeds: needs - ownNeeds, descWorking: working - ownWorking, descSnoozed: snooz - ownSnoozed };
+}
+// A collapsed parent stands in for what is inside it -- its ring is the ring of a session two
+// levels down -- so the snooze under that ring has to reach those sessions too. Expanded, every
+// card draws its own ring and owns only its own sessions.
+const standsIn = id => collapsed.has(id) && visKidsOf(id).length > 0;
+function attnSessions(id, pick, deep = null) {
+  const seen = new Set(), out = [], down = deep === null ? standsIn(id) : deep;
+  const walk = cid => {
+    for (const s of sessOf(cid)) { if (seen.has(s.id)) continue; seen.add(s.id); if (pick(s)) out.push(s); }
+    if (down) for (const k of kidsOf(cid)) walk(k.id);
+  };
+  walk(id);
+  return out;
 }
 // Sessions, not cards: a session on two cards in the area is one thing needing you.
-function areaAttn(a) { const inArea = new Set(CARDS.filter(c => c.area === a.id).map(c => c.id)); const ss = SESSIONS.filter(s => s.items.some(id => inArea.has(id))); return { needs: ss.filter(s => s.state === 'needs_you').length, working: ss.filter(s => s.state === 'working').length }; }
-const needsYouCount = () => SESSIONS.filter(s => s.state === 'needs_you' && cardsOf(s).length).length; // attached sessions asking for you
-function needsYouCards() { return CARDS.filter(c => sessOf(c.id).some(s => s.state === 'needs_you')); }
+function areaAttn(a) { const inArea = new Set(CARDS.filter(c => c.area === a.id).map(c => c.id)); const ss = SESSIONS.filter(s => s.items.some(id => inArea.has(id))); return { needs: ss.filter(needy).length, working: ss.filter(s => s.state === 'working').length, snoozed: ss.filter(snoozed).length }; }
+const needsYouCount = () => SESSIONS.filter(s => needy(s) && cardsOf(s).length).length; // attached sessions asking for you
+const snoozedCount = () => SESSIONS.filter(s => snoozed(s) && cardsOf(s).length).length; // ...and the ones you silenced
+function needsYouCards() { return CARDS.filter(c => sessOf(c.id).some(needy)); }
 function lifecycleWhy(c) {
   const n = sessOf(c.id).length, kids = kidsOf(c.id);
   if (c.human === 'done') return 'marked done by you';
@@ -310,8 +352,8 @@ function compStrip(kids) {
   return strip;
 }
 function sessChip(s, card) {
-  const also = otherCardsOf(s, card);
-  return h('span', { class: `sess ${s.state}`, 'data-sid': s.id, title: `${sessTitle(s)} — ${STATE_LABEL[s.state] || s.state}${s.attention ? ' · ' + s.attention : ''}${s.prompt ? `\n\nlast prompt: ${s.prompt}` : ''}${also.length ? `\n\nalso on ${quoteNames(also)}` : ''}\n\nDrag to another card to move it there; off the card to detach it from this one.` }, h('i', { class: `dot ${s.state}` }), sessTitle(s));
+  const also = otherCardsOf(s, card), zz = snoozed(s);
+  return h('span', { class: `sess ${s.state}${zz ? ' snoozed' : ''}`, 'data-sid': s.id, title: `${sessTitle(s)} — ${STATE_LABEL[s.state] || s.state}${s.attention ? ' · ' + s.attention : ''}${zz ? `, snoozed — quiet for another ${snoozeText(s)}` : ''}${s.prompt ? `\n\nlast prompt: ${s.prompt}` : ''}${also.length ? `\n\nalso on ${quoteNames(also)}` : ''}\n\nDrag to another card to move it there; off the card to detach it from this one.` }, h('i', { class: `dot ${s.state}${zz ? ' snoozed' : ''}` }), ellip(sessTitle(s)));
 }
 function cardEl(c, depth = 0) {
   const kids = visKidsOf(c.id), hiddenKids = kidsOf(c.id).length - kids.length, sess = sessOf(c.id), lc = lifecycle(c), ag = attn(c.id);
@@ -319,9 +361,18 @@ function cardEl(c, depth = 0) {
   const loud = ag.ownNeeds > 0 || (isCollapsed && ag.descNeeds > 0); // attention shows where it is, or rolled up when hidden
   const el = h('div', { class: `card ${lc} ${kids.length ? 'has-kids' : ''} ${isCollapsed ? 'collapsed' : ''} ${loud ? 'attn' : ''} ${state.selected === c.id ? 'selected' : ''}`, 'data-id': c.id, 'data-depth': String(depth), tabindex: '0' });
   if (isCollapsed) el.appendChild(h('i', { class: 'stack2' }));
+  // The ring is a drawn element rather than a pseudo-element: the card already spends ::after on
+  // the collapsed deck edge and ::before on the drop hint, and a card can be all three at once.
+  if (loud) el.appendChild(h('i', { class: 'ring', 'aria-hidden': 'true' }));
   const head = h('div', { class: 'card-head' }, h('i', { class: `glyph ${lc}`, title: lc }), h('span', { class: 'title' }, c.name));
   if (isCollapsed && ag.descNeeds) head.appendChild(h('span', { class: 'badge attn' }, h('i', { class: 'dot needs_you' }), ag.descNeeds === 1 ? 'needs you' : `${ag.descNeeds} need you`));
   else if (isCollapsed && ag.descWorking) head.appendChild(h('span', { class: 'badge work' }, h('i', { class: 'dot working' }), 'working'));
+  // The off-switch for the ring, and -- once it is off -- the badge that says so and how long is
+  // left. Both sit in the head, next to what they are about: a ringing card you cannot get to is
+  // silenced where you noticed it, without opening anything.
+  const zzz = attnSessions(c.id, snoozed);
+  if (loud) head.appendChild(h('button', { class: 'zz', 'data-act': 'snooze', title: SNOOZE_TIP, 'aria-label': `Snooze the session that needs you on “${c.name}”` }, moonIcon()));
+  else if (zzz.length) head.appendChild(h('button', { class: 'badge zzed', 'data-act': 'wake', title: `${zzz.length === 1 ? 'A session here still needs you' : `${zzz.length} sessions here still need you`} — snoozed, back in ${snoozeText(zzz)}. Click to bring ${zzz.length === 1 ? 'it' : 'them'} back now.` }, moonIcon(), snoozeText(zzz)));
   const hiddenNote = hiddenKids ? ` · ${hiddenKids} hidden by the filter` : '';
   if (kids.length) head.appendChild(h('button', { class: 'tog', 'data-act': 'toggle', title: (isCollapsed ? `Show ${descendantCount(c.id, true)} inside` : 'Collapse this card') + hiddenNote }, String(kids.length), chevron()));
   else if (hiddenKids) head.appendChild(h('span', { class: 'tog hid', title: `${hiddenKids} card${hiddenKids === 1 ? '' : 's'} inside — hidden by the filter` }, `${hiddenKids} hidden`));
@@ -357,6 +408,7 @@ function areaEl(a) {
   const meta = h('span', { class: 'area-meta' }, shown === a.count ? `${a.count} card${a.count === 1 ? '' : 's'}` : `${shown} of ${a.count} cards`);
   if (aa.needs) meta.appendChild(h('span', { class: 'a' }, h('i', { class: 'dot needs_you' }), `${aa.needs} need${aa.needs === 1 ? 's' : ''} you`));
   if (aa.working) meta.appendChild(h('span', { class: 'w' }, h('i', { class: 'dot working' }), `${aa.working} working`));
+  if (aa.snoozed) meta.appendChild(h('span', { class: 'z', title: `Still needs you, snoozed on purpose — the cards go quiet until the time is up.` }, h('i', { class: 'dot needs_you snoozed' }), `${aa.snoozed} snoozed`));
   const colEls = Array.from({ length: cols }, () => h('div', { class: 'col' }));
   cards.forEach((c, i) => colEls[columnOf(i, cols)].appendChild(cardEl(c, 0)));
   const hiddenTop = topOf(a).length - cards.length;
@@ -366,7 +418,7 @@ function areaEl(a) {
         : 'No cards yet — press + or drop a session here'));
   return h('section', { class: 'area', 'data-area': a.id },
     h('header', { class: 'area-head' }, h('h2', { class: 'area-title' }, a.name), meta,
-      h('button', { class: `area-menu${popArea === a.id ? ' open' : ''}`, 'data-act': 'area-menu', 'aria-haspopup': 'menu', title: `More for ${a.name}` }, '\u22EF'),
+      h('button', { class: `area-menu${popKey === `area:${a.id}` ? ' open' : ''}`, 'data-act': 'area-menu', 'aria-haspopup': 'menu', title: `More for ${a.name}` }, '\u22EF'),
       h('button', { class: 'area-add', 'data-act': 'add-to-area', title: `New idea in ${a.name}` }, '+')),
     h('div', { class: 'cols' }, ...colEls));
 }
@@ -435,10 +487,15 @@ function renderTopbar() {
   $('#stale').hidden = !(OV && OV.server && OV.server.stale);
 }
 function renderAttnPill() {
-  const n = needsYouCount(), working = SESSIONS.filter(s => s.state === 'working').length, pill = $('#attnPill');
+  const n = needsYouCount(), working = SESSIONS.filter(s => s.state === 'working').length, zz = snoozedCount(), pill = $('#attnPill');
+  const trail = t => pill.append(h('span', { class: 'muted', style: 'margin-left:6px;font-weight:400' }, `· ${t}`));
   pill.innerHTML = '';
-  if (n) { pill.append(h('i', { class: 'dot needs_you', style: 'margin-right:7px' }), `${n} need${n === 1 ? 's' : ''} you`); if (working) pill.append(h('span', { class: 'muted', style: 'margin-left:6px;font-weight:400' }, `· ${working} working`)); pill.style.borderColor = 'var(--attn)'; pill.style.color = 'var(--attn-ink)'; }
+  if (n) { pill.append(h('i', { class: 'dot needs_you', style: 'margin-right:7px' }), `${n} need${n === 1 ? 's' : ''} you`); if (working) trail(`${working} working`); pill.style.borderColor = 'var(--attn)'; pill.style.color = 'var(--attn-ink)'; }
   else { pill.append(working ? h('i', { class: 'dot working', style: 'margin-right:7px' }) : '', working ? `${working} working` : 'All quiet'); pill.style.borderColor = ''; pill.style.color = ''; }
+  // Snoozed sessions still need you. They are out of the count on purpose, never out of sight:
+  // the pill says how many are waiting quietly, and Needs you in the rail lists them on request.
+  if (zz) trail(`${zz} snoozed`);
+  pill.title = `Press J to jump to the next card that needs you.${zz ? `\n\n${zz === 1 ? 'One session is' : `${zz} sessions are`} snoozed: still needing you, not counted, and quiet until the time is up. The Needs you list in the rail brings them back.` : ''}`;
 }
 // Hiding: one row, or a whole list of them in one request (and one Undo). Nothing is
 // destroyed and nothing is named -- a hidden session only leaves the Unattached list.
@@ -453,12 +510,32 @@ function hideSessions(ss, hidden) {
     undo: () => hideApi(ids, !hidden),
   });
 }
+// Snoozing: the same shape as hiding, one request for however many rows the gesture covers, and
+// one Undo. Waking is offered no Undo -- it takes a fresh choice of how long, not a repeat of the
+// old one, and the menu is right there.
+const snoozeApi = (ids, minutes) => api('POST', '/api/sessions/snooze', { session_ids: ids, minutes });
+function snoozeSessions(ss, minutes) {
+  const ids = ss.map(s => s.id); if (!ids.length) return Promise.resolve();
+  const what = ids.length === 1 ? `“${sessTitle(ss[0])}”` : `${ids.length} sessions`;
+  const dur = (SNOOZE_OPTS.find(([, m]) => m === minutes) || [`${minutes} minutes`])[0].toLowerCase();
+  return mutate(() => snoozeApi(ids, minutes), {
+    msg: minutes ? `Snoozed ${what} for ${dur} — still needs you, just quiet` : `Woke ${what}`,
+    undo: minutes ? () => snoozeApi(ids, 0) : null,
+  });
+}
 // The button at the end of an unattached row: hide it, or -- when you are looking at the
 // hidden ones -- put it back. A session on a card is not in that list, so it gets neither.
 function hideChip(s) {
   if (s.items.length) return '';
   if (s.hidden) return h('button', { class: 'where act', title: 'Hidden from Unattached — click to put it back in the list', onclick: () => hideSessions([s], false) }, 'hidden · unhide');
   return h('button', { class: 'where act onhover', title: 'Hide it from Unattached. Nothing is deleted: it stays under All, and the line at the bottom of this list brings the hidden ones back.', onclick: () => hideSessions([s], true) }, 'hide');
+}
+// The same pair on a rail row, for the session rather than the card: this is where you triage,
+// and a row you have read is silenced without going looking for the cards it is on.
+function snoozeChip(s) {
+  if (s.state !== 'needs_you') return '';
+  if (snoozed(s)) return h('button', { class: 'where act zzed', title: `Snoozed — still needs you, quiet for another ${snoozeText(s)}. Click to bring it back now.`, onclick: () => snoozeSessions([s], 0) }, moonIcon(), `${snoozeText(s)} · wake`);
+  return h('button', { class: 'where act onhover', title: SNOOZE_TIP, onclick: e => openSnoozeMenu(e.currentTarget, [s]) }, 'snooze');
 }
 function renderRail() {
   const rail = $('#rail'); rail.innerHTML = '';
@@ -485,9 +562,9 @@ function renderRail() {
       // one chip per card the session sits on -- click one to go to that card
       const cards = cardsOf(s);
       const where = h('div', { class: 'wheres' }, cards.length
-        ? cards.map(card => h('span', { class: 'where', 'data-id': card.id, title: `On “${card.name}” — click to go there` }, h('i', { class: `glyph ${lifecycle(card)}` }), card.name))
-        : (s.hidden ? '' : h('span', { class: 'where none' }, 'unattached · drag onto a card')), hideChip(s));
-      g.appendChild(h('div', { class: `srow${s.hidden && !cards.length ? ' tucked' : ''}`, 'data-sid': s.id, tabindex: '0', title: sessTip(s) }, h('i', { class: `dot ${s.state}` }),
+        ? cards.map(card => h('span', { class: 'where', 'data-id': card.id, title: `On “${card.name}” — click to go there` }, h('i', { class: `glyph ${lifecycle(card)}` }), ellip(card.name)))
+        : (s.hidden ? '' : h('span', { class: 'where none' }, 'unattached · drag onto a card')), snoozeChip(s), hideChip(s));
+      g.appendChild(h('div', { class: `srow${s.hidden && !cards.length ? ' tucked' : ''}${snoozed(s) ? ' snoozed' : ''}`, 'data-sid': s.id, tabindex: '0', title: sessTip(s) }, h('i', { class: `dot ${s.state}${snoozed(s) ? ' snoozed' : ''}` }),
         h('div', { style: 'min-width:0' }, h('div', { class: 't' }, sessTitle(s)),
           s.prompt ? h('div', { class: 'p' }, s.prompt) : '',
           h('div', { class: 'm' }, s.branch ? h('span', { class: 'br' }, s.branch) : (s.cwd ? h('span', { class: 'cwd', title: s.cwd }, shortPath(s.cwd)) : ''), s.attention ? h('span', {}, `· ${s.attention}`) : '', h('span', { class: 'sid' }, s.short), h('span', { class: 'ago', title: agoTip(s) }, timeAgo(s.updated))),
@@ -495,16 +572,20 @@ function renderRail() {
     }
     rail.appendChild(g);
   }
-  if (!any) rail.appendChild(h('div', { class: 'rail-empty' }, offBoard ? 'Every session here is on a card the filter hides.' : state.railFilter === 'unattached' ? (tucked ? 'Nothing left in Unattached — the rest are hidden.' : 'Every session is attached to a card.') : state.railFilter === 'attention' ? 'Nothing needs you right now.' : 'No Claude sessions observed yet. Install the hook (folio hooks install) and start one.'));
+  if (!any) rail.appendChild(h('div', { class: 'rail-empty' }, offBoard ? 'Every session here is on a card the filter hides.' : state.railFilter === 'unattached' ? (tucked ? 'Nothing left in Unattached — the rest are hidden.' : 'Every session is attached to a card.') : state.railFilter === 'attention' ? (tucked ? `Nothing needs you right now — ${tucked === 1 ? 'the one session that does is' : `the ${tucked} sessions that do are`} snoozed.` : 'Nothing needs you right now.') : 'No Claude sessions observed yet. Install the hook (folio hooks install) and start one.'));
   if (offBoard) rail.appendChild(h('button', { class: 'rail-hidden', title: `Their cards are hidden by the “${FOCUS_MODES[state.focus].label.toLowerCase()}” filter — click to show everything.`, onclick: () => setFocus('all') },
     `${offBoard} on hidden card${offBoard === 1 ? '' : 's'}`));
-  // Unattached leaves the hidden ones out -- but never silently. The count sits under the
-  // list and puts them back on screen with one click, so the whole list is always one
-  // click away; from there each row can be unhidden, or all of them at once.
-  if (state.railFilter === 'unattached' && tucked) {
+  // Both lists leave rows out -- Unattached the ones you hid, Needs you the ones you snoozed --
+  // but never silently. The count sits under the list and puts them back on screen with one
+  // click, so the whole list is always one click away; from there each row can come back, or
+  // all of them at once.
+  if (tucked && ['unattached', 'attention'].includes(state.railFilter)) {
+    const zz = state.railFilter === 'attention';
     rail.appendChild(h('button', { class: 'rail-hidden', onclick: () => { state.showHidden = !state.showHidden; $('#rail').scrollTop = 0; renderRail(); },
-      title: state.showHidden ? 'Back to the sessions you have not hidden.' : 'On no card, and you hid them: this list leaves them out. Click to list them here too — nothing was deleted.' },
-      state.showHidden ? `hide the ${tucked} again` : `${tucked} hidden · show ${tucked === 1 ? 'it' : 'them'}`));
+      title: state.showHidden ? (zz ? 'Back to the sessions that are actually waiting on you.' : 'Back to the sessions you have not hidden.')
+        : zz ? 'Needing you, and snoozed by you: this list leaves them out so the ones you have not seen stand alone. Click to list them here too.'
+          : 'On no card, and you hid them: this list leaves them out. Click to list them here too — nothing was deleted.' },
+      state.showHidden ? `${zz ? 'quiet' : 'hide'} the ${tucked} again` : `${tucked} ${zz ? 'snoozed' : 'hidden'} · show ${tucked === 1 ? 'it' : 'them'}`));
   }
   // The spare is Claude Code's next background session, started ahead of time: no prompt,
   // no title, nothing to open or attach. It used to sit under Ready as “Untitled”. Say it
@@ -533,7 +614,7 @@ function renderInspector() {
   ins.classList.add('open'); ins.innerHTML = ''; ins.dataset.card = c.id;
   const lc = lifecycle(c), kids = kidsOf(c.id), sess = sessOf(c.id), ag = attn(c.id), area = areaOf(c.id);
   const path = h('div', { class: 'ins-path' }, h('b', {}, area ? area.name : c.area));
-  ancestors(c.id).forEach(pid => { path.append(h('span', { class: 'crumb-sep' }, '›'), h('button', { class: 'crumb', style: 'padding:0 2px', 'data-act': 'reveal', 'data-id': pid }, cardById(pid).name)); });
+  ancestors(c.id).forEach(pid => { path.append(h('span', { class: 'crumb-sep' }, '›'), h('button', { class: 'crumb', style: 'padding:0 2px', 'data-act': 'reveal', 'data-id': pid }, ellip(cardById(pid).name))); });
   const acts = h('span', { class: 'ins-acts' }, h('button', { class: 'mini ico', 'data-act': 'copy-brief', title: COPY_TIP }, copyIcon(), 'Copy for Claude'));
   if (c.parent) acts.appendChild(h('button', { class: 'mini', 'data-act': 'move-out', title: 'Make it a sibling of its parent' }, '↑ Move out'));
   path.appendChild(acts);
@@ -551,7 +632,14 @@ function renderInspector() {
     h('button', { class: c.human === 'parked' ? 'on' : '', 'data-act': 'toggle-park' }, h('i', { class: 'glyph parked' }), c.human === 'parked' ? 'Parked' : 'Park')));
   if (c.human === 'parked') st.appendChild(h('input', { class: 'park-note', 'data-act': 'park-note', value: c.parkNote, placeholder: 'why / until when (optional)', 'aria-label': 'Park note' }));
   if (!c.human && kids.length && kids.every(k => lifecycle(k) === 'done')) st.appendChild(h('div', { class: 'state-line', style: 'margin-top:8px;color:var(--muted);font-size:12px' }, 'Every child is done — mark this done?'));
-  if (ag.needs) st.appendChild(h('div', { class: 'attn-call' }, h('i', { class: 'dot needs_you' }), h('span', {}, h('b', {}, ag.needs === 1 ? '1 session' : `${ag.needs} sessions`), ag.descNeeds ? ` need${ag.needs === 1 ? 's' : ''} you (inside)` : ` need${ag.needs === 1 ? 's' : ''} you`), h('button', { 'data-act': 'resume-first' }, 'Open')));
+  if (ag.needs) st.appendChild(h('div', { class: 'attn-call' }, h('i', { class: 'dot needs_you' }), h('span', {}, h('b', {}, ag.needs === 1 ? '1 session' : `${ag.needs} sessions`), ag.descNeeds ? ` need${ag.needs === 1 ? 's' : ''} you (inside)` : ` need${ag.needs === 1 ? 's' : ''} you`),
+    h('button', { class: 'zz', 'data-act': 'snooze', title: SNOOZE_TIP, 'aria-label': 'Snooze' }, moonIcon()), h('button', { 'data-act': 'resume-first' }, 'Open')));
+  else if (ag.snoozed) {
+    const zzz = attnSessions(c.id, snoozed, true);
+    st.appendChild(h('div', { class: 'attn-call quiet' }, h('i', { class: 'dot needs_you snoozed' }),
+      h('span', {}, h('b', {}, ag.snoozed === 1 ? '1 session' : `${ag.snoozed} sessions`), ` still need${ag.snoozed === 1 ? 's' : ''} you — snoozed, back in ${snoozeText(zzz)}`),
+      h('button', { 'data-act': 'wake' }, 'Wake')));
+  }
   body.appendChild(st);
   // sessions
   const ss = h('div', { class: 'sec' }, h('h3', {}, 'Sessions', h('span', { class: 'n' }, String(sess.length)), h('button', { class: 'act', 'data-act': 'attach-hint' }, 'Attach…')));
@@ -561,9 +649,11 @@ function renderInspector() {
     const row = h('div', { class: 'ins-sess' }, h('i', { class: `dot ${s.state}` }),
       h('div', { style: 'min-width:0' }, h('div', { class: 't' }, h('button', { class: 'link', 'data-act': 'rename-session', 'data-sid': s.id, title: (s.title ? 'Click to rename' : 'Named by Claude Code — click to rename') + (also.length ? ' — the name follows the session onto every card it is on' : '') }, sessTitle(s))),
         s.prompt ? h('div', { class: 'p', title: s.prompt }, s.prompt) : '',
-        h('div', { class: 'm' }, h('span', {}, (STATE_LABEL[s.state] || s.state) + (s.attention ? ' · ' + s.attention : '')), s.branch ? h('span', { class: 'mono' }, s.branch) : '', h('span', { class: 'mono', title: s.id }, s.short), h('span', { title: agoTip(s) }, agoText(s.updated))),
+        h('div', { class: 'm' }, h('span', {}, (STATE_LABEL[s.state] || s.state) + (s.attention ? ' · ' + s.attention : '') + (snoozed(s) ? ` · snoozed ${snoozeText(s)}` : '')), s.branch ? h('span', { class: 'mono' }, s.branch) : '', h('span', { class: 'mono', title: s.id }, s.short), h('span', { title: agoTip(s) }, agoText(s.updated))),
         also.length ? h('div', { class: 'also' }, 'also on ', ...also.flatMap((o, i) => [i ? ', ' : '', h('button', { class: 'link', 'data-act': 'reveal', 'data-id': o.id, title: `Go to “${o.name}”` }, o.name)])) : ''),
-      h('div', { class: 'acts' }, h('button', { class: `mini ${s.state === 'needs_you' ? 'primary' : ''}`, 'data-act': 'resume', 'data-sid': s.id }, s.resume && s.resume.kind === 'attach' ? 'Attach' : (['ended', 'inactive', 'unknown'].includes(s.state) ? 'Resume' : 'Open')), h('button', { class: 'mini', 'data-act': 'detach', 'data-sid': s.id, title: `Detach from this card (the Claude session itself is untouched${also.length ? `, and it stays on ${quoteNames(also)}` : ''})` }, '×')));
+      h('div', { class: 'acts' }, h('button', { class: `mini ${needy(s) ? 'primary' : ''}`, 'data-act': 'resume', 'data-sid': s.id }, s.resume && s.resume.kind === 'attach' ? 'Attach' : (['ended', 'inactive', 'unknown'].includes(s.state) ? 'Resume' : 'Open')),
+        s.state === 'needs_you' ? h('button', { class: 'mini ico zz', 'data-act': snoozed(s) ? 'wake-one' : 'snooze-one', 'data-sid': s.id, title: snoozed(s) ? `Snoozed — quiet for another ${snoozeText(s)}. Click to bring it back now.` : SNOOZE_TIP, 'aria-label': snoozed(s) ? 'Wake' : 'Snooze' }, moonIcon(), snoozed(s) ? snoozeText(s) : '') : '',
+        h('button', { class: 'mini', 'data-act': 'detach', 'data-sid': s.id, title: `Detach from this card (the Claude session itself is untouched${also.length ? `, and it stays on ${quoteNames(also)}` : ''})` }, '×')));
     if (state.resumeOpen === s.id && s.resume) {
       row.appendChild(h('div', { class: 'resume-box' },
         h('div', { class: 'cmd' }, h('code', {}, s.resume.command), h('button', { class: 'mini', onclick: () => copyText(s.resume.command) }, 'Copy')),
@@ -768,7 +858,7 @@ function armNest(el, id, p) { // nesting arms after a short settle so a fast swe
   p.nestTimer = setTimeout(() => { if (ptr !== p || p.nestId !== id) return; p.nestArmed = true; const cur = $(`.card[data-id="${id}"]`); if (cur) { cur.classList.remove('dwell'); mark(cur, label); } p.target = { kind: 'parent', id }; p.ghost && p.ghost.classList.add('going-in'); }, 140);
 }
 function disarmNest(p) { clearTimeout(p.nestTimer); p.nestId = null; p.nestArmed = false; p.ghost && p.ghost.classList.remove('going-in'); }
-function makeGhost(c) { const n = descendantCount(c.id); const g = h('div', { class: 'ghost' }, h('i', { class: `glyph ${lifecycle(c)}` }), c.name, n ? h('span', { class: 'n' }, `· ${n} inside`) : ''); document.body.appendChild(g); return g; }
+function makeGhost(c) { const n = descendantCount(c.id); const g = h('div', { class: 'ghost' }, h('i', { class: `glyph ${lifecycle(c)}` }), ellip(c.name), n ? h('span', { class: 'n' }, `· ${n} inside`) : ''); document.body.appendChild(g); return g; }
 function endCardDrag(p) { disarmNest(p); p.el.classList.remove('dragging-src'); if (p.ghost) p.ghost.remove(); clearDropTargets(); stage.classList.remove('card-drag'); }
 
 stage.addEventListener('pointerdown', e => {
@@ -844,7 +934,7 @@ function beginSessDrag(e, sid, srcEl, from = null) {
 function moveSessDrag(e) {
   const d = sdrag, dx = e.clientX - d.sx, dy = e.clientY - d.sy, s = sessById(d.sid); if (!s) return;
   if (!d.moved) { if (Math.hypot(dx, dy) < 5) return; d.moved = true; d.srcEl.classList.add('dragging'); stage.classList.add('sess-drag');
-    d.ghost = h('div', { class: 'sess sghost ' + s.state }, h('i', { class: 'dot ' + s.state }), sessTitle(s)); document.body.appendChild(d.ghost); }
+    d.ghost = h('div', { class: 'sess sghost ' + s.state }, h('i', { class: 'dot ' + s.state }), ellip(sessTitle(s))); document.body.appendChild(d.ghost); }
   d.ghost.style.left = e.clientX + 'px'; d.ghost.style.top = e.clientY + 'px';
   clearDropTargets(); $('.rail').classList.remove('droptarget'); d.ghost.classList.remove('detaching'); d.target = null;
   const els = document.elementsFromPoint(e.clientX, e.clientY), hit = hitAt(e.clientX, e.clientY);
@@ -880,26 +970,27 @@ $('#allRepos').addEventListener('change', e => { state.allRepos = e.target.check
 // directory and every Markdown file under it, and there is no undo to offer. So it is
 // not a button sitting in the header any more. It hides in a menu, under a harmless
 // first item, behind a dialog that stays inert until you type the Area's name back.
-let popArea = null, popEl = null;
+let popKey = null, popEl = null, popBtn = null;
 function closePop() {
   if (!popEl) return;
-  popEl.remove(); popEl = null; popArea = null;
+  popEl.remove(); popEl = null; popKey = null;
+  if (popBtn) popBtn.classList.remove('open');
+  popBtn = null;
   document.removeEventListener('pointerdown', onPopOut, true);
   document.removeEventListener('keydown', onPopKey, true);
   window.removeEventListener('wheel', closePop, true);
   window.removeEventListener('resize', closePop);
-  $$('.area-menu.open').forEach(b => b.classList.remove('open'));
+  $$('.area-menu.open, .zz.open').forEach(b => b.classList.remove('open'));  // a redraw can have replaced the button
 }
 const onPopOut = e => { if (popEl && !popEl.contains(e.target)) closePop(); };
 const onPopKey = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closePop(); } };
-function openAreaMenu(btn, area) {
-  if (popArea === area.id) { closePop(); return; }   // the ⋯ toggles
+// One menu at a time, hung under the button that opened it, and that button toggles it shut.
+// `key` is what "the same menu" means: the Area, or the exact set of sessions being snoozed.
+function openMenu(btn, key, items) {
+  if (popKey === key) { closePop(); return; }
   closePop();
-  popArea = area.id; btn.classList.add('open');
-  popEl = h('div', { class: 'pop', role: 'menu' },
-    h('button', { class: 'pop-i', role: 'menuitem', onclick: () => { closePop(); newCard({ area: area.id }); } }, `New idea in ${area.name}`),
-    h('i', { class: 'pop-sep' }),
-    h('button', { class: 'pop-i harm', role: 'menuitem', onclick: () => { closePop(); deleteArea(area); } }, 'Delete this Area…'));
+  popKey = key; popBtn = btn; btn.classList.add('open');
+  popEl = h('div', { class: 'pop', role: 'menu' }, ...items);
   document.body.appendChild(popEl);
   const r = btn.getBoundingClientRect(), m = popEl.getBoundingClientRect();
   popEl.style.left = Math.max(8, Math.min(r.right - m.width, window.innerWidth - m.width - 8)) + 'px';
@@ -908,6 +999,25 @@ function openAreaMenu(btn, area) {
   document.addEventListener('keydown', onPopKey, true);
   window.addEventListener('wheel', closePop, true);
   window.addEventListener('resize', closePop);
+}
+function openAreaMenu(btn, area) {
+  openMenu(btn, `area:${area.id}`, [
+    h('button', { class: 'pop-i', role: 'menuitem', onclick: () => { closePop(); newCard({ area: area.id }); } }, `New idea in ${area.name}`),
+    h('i', { class: 'pop-sep' }),
+    h('button', { class: 'pop-i harm', role: 'menuitem', onclick: () => { closePop(); deleteArea(area); } }, 'Delete this Area…'),
+  ]);
+}
+// How long to stay quiet. The three lengths are the shape of the answer to "not now": the rest of
+// this train of thought, the rest of the afternoon, tomorrow. The note is there because silencing
+// something that needs you should never feel like dismissing it.
+function openSnoozeMenu(btn, ss) {
+  if (!ss.length) return;
+  openMenu(btn, `snooze:${ss.map(s => s.id).sort().join(',')}`, [
+    h('div', { class: 'pop-h' }, ss.length === 1 ? `Quiet “${sessTitle(ss[0])}” for…` : `Quiet ${ss.length} sessions for…`),
+    ...SNOOZE_OPTS.map(([label, mins]) => h('button', { class: 'pop-i', role: 'menuitem', onclick: () => { closePop(); snoozeSessions(ss, mins); } }, label)),
+    h('i', { class: 'pop-sep' }),
+    h('div', { class: 'pop-n' }, 'It still needs you and stays in the list. Anything new from the session ends the quiet at once.'),
+  ]);
 }
 
 // What deleting an Area actually costs, counted from the tree the canvas already has.
@@ -982,6 +1092,8 @@ stage.addEventListener('click', e => {
   if (a === 'add-child') newCard({ parent: act.closest('.card').dataset.id });
   if (a === 'area-menu') openAreaMenu(act, areaById(act.closest('.area').dataset.area));
   if (a === 'copy-brief') copyBrief(cardById(act.closest('.card').dataset.id));
+  if (a === 'snooze') openSnoozeMenu(act, attnSessions(act.closest('.card').dataset.id, needy));
+  if (a === 'wake') snoozeSessions(attnSessions(act.closest('.card').dataset.id, snoozed), 0);
 });
 $('#inspector').addEventListener('click', e => {
   const act = e.target.closest('[data-act]'); if (!act) return; const a = act.dataset.act, c = cardById(state.selected); if (!c) return;
@@ -990,6 +1102,12 @@ $('#inspector').addEventListener('click', e => {
   if (a === 'toggle-done') setStatus(c, c.human === 'done' ? 'open' : 'done');
   if (a === 'toggle-park') setStatus(c, c.human === 'parked' ? 'open' : 'parked');
   if (a === 'detach') { const s = sessById(act.dataset.sid); if (s) detachSession(s, c.id); }
+  // The card's own pair covers everything under it -- the panel counts what is inside as well --
+  // while a session row snoozes just that one.
+  if (a === 'snooze') openSnoozeMenu(act, attnSessions(c.id, needy, true));
+  if (a === 'wake') snoozeSessions(attnSessions(c.id, snoozed, true), 0);
+  if (a === 'snooze-one') { const s = sessById(act.dataset.sid); if (s) openSnoozeMenu(act, [s]); }
+  if (a === 'wake-one') { const s = sessById(act.dataset.sid); if (s) snoozeSessions([s], 0); }
   if (a === 'resume' || a === 'resume-first') {
     const s = a === 'resume' ? sessById(act.dataset.sid) : (sessOf(c.id).find(x => x.state === 'needs_you') || sessOf(c.id)[0]); if (!s) return;
     state.resumeOpen = state.resumeOpen === s.id ? null : s.id; renderInspector();
