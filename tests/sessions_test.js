@@ -36,10 +36,10 @@ vm.runInThisContext(
   + between('function attn(id)', 'function needsYouCards(')
   + between('const attachApi =', 'function setStatus(')
   + between('function sessDropTarget(', "const rail = $('#rail'); let sdrag")
-  + '\n;globalThis.UI = { set(c, s) { CARDS = c; SESSIONS = s; }, sessOf, cardsOf, otherCardsOf, railVisible, attn, areaAttn, needsYouCount, attachSession, detachSession, sessDropTarget };\n',
+  + '\n;globalThis.UI = { set(c, s) { CARDS = c; SESSIONS = s; }, sessOf, cardsOf, otherCardsOf, railVisible, railRows, attn, areaAttn, needsYouCount, attachSession, detachSession, sessDropTarget };\n',
   { filename: 'app.js-extract' },
 );
-const { set, sessOf, cardsOf, otherCardsOf, railVisible, attn, areaAttn, needsYouCount, attachSession, detachSession, sessDropTarget } = globalThis.UI;
+const { set, sessOf, cardsOf, otherCardsOf, railVisible, railRows, attn, areaAttn, needsYouCount, attachSession, detachSession, sessDropTarget } = globalThis.UI;
 
 // One area. A parent (Survey) with a child (Prototype), and an unrelated card. One session
 // sits on both the parent and the child, one on the unrelated card, one on nothing yet.
@@ -82,6 +82,25 @@ HIDDEN.add('A');
 assert.ok(!railVisible(s1), 'the row goes only when every card it is on is hidden');
 assert.ok(railVisible(s3), 'an unattached row has no card to follow, so it always stays');
 HIDDEN.clear();
+
+// ---------------------------------------------------------------- the label, and Unattached
+// Unattached is an inbox. A session you have labelled ("scratch", "asked a question") is one
+// you have dealt with without giving it a card, so it leaves that list -- but is never lost:
+// the count comes back with the rows on request.
+const s4 = { id: 's4', short: 's4', title: '', autoTitle: 'a one-off', state: 'ended', items: [], label: 'scratch' };
+const ALL = [s1, s2, s3, s4];
+assert.deepEqual(ids(railRows(ALL, 'all', false).rows), ['s1', 's2', 's3', 's4'], 'All shows everything, labelled or not');
+assert.equal(railRows(ALL, 'all', false).labelled, 0, 'nothing is dropped outside Unattached, so nothing to offer back');
+let r = railRows(ALL, 'unattached', false);
+assert.deepEqual(ids(r.rows), ['s3'], 'Unattached is what is on no card and not yet labelled');
+assert.equal(r.labelled, 1, 'and says how many the label took out');
+r = railRows(ALL, 'unattached', true);
+assert.deepEqual(ids(r.rows), ['s3', 's4'], 'asked for them, the labelled ones come back');
+assert.equal(r.labelled, 1);
+assert.deepEqual(ids(railRows(ALL, 'attention', false).rows), ['s1'], 'Needs you ignores labels entirely');
+const s5 = { ...s1, label: 'on a card anyway' };
+assert.deepEqual(ids(railRows([s5, s3], 'unattached', false).rows), ['s3'], 'a labelled session on a card was never in this list');
+assert.equal(railRows([s5, s3], 'unattached', false).labelled, 0, 'so it is not counted as one held back either');
 
 // ---------------------------------------------------------------- what a drop does
 const over = (o = {}) => ({ rail: false, stage: false, chrome: false, ...o });

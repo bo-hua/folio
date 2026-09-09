@@ -631,3 +631,57 @@ def test_a_session_can_sit_on_several_cards(server):
     # the old opt-in: exclusive leaves every other card
     assert call("POST", f"/api/items/{proto['id']}/sessions", {"session_id": "s-shared", "exclusive": True})[0] == 200
     assert on() == [proto["id"]]
+
+
+def test_labelling_an_unattached_session_takes_it_out_of_the_inbox(server):
+    """Unattached is an inbox, and plenty of sessions never deserve a card -- a question
+    answered, a one-off somewhere else. They used to sit in that list until the record
+    aged out a week later. A label says you have dealt with one: the row carries it, the
+    rail's Unattached filter leaves it out, and nothing is hidden for good."""
+    call, cfg, repo = server["call"], server["config"], server["repo"]
+    rt = RuntimeStore(cfg.runtime_dir)
+    now = datetime.now(timezone.utc)
+    rt.record_event({"session_id": "s-free", "hook_event_name": "Stop", "cwd": str(repo["repo"])}, now=now)
+    rt.record_event({"session_id": "s-carded", "hook_event_name": "PreToolUse", "cwd": str(repo["repo"])}, now=now)
+
+    def row(sid, path="/api/overview"):
+        return next(s for s in call("GET", path)[1]["sessions"] if s["id"] == sid)
+
+    assert row("s-free")["label"] == "", "a session starts unlabelled"
+
+    status, body = call("PATCH", "/api/sessions/s-free", {"label": "  answered\na question "})
+    assert (status, body) == (200, {"session_id": "s-free", "label": "answered a question"}), "one line, trimmed"
+    assert row("s-free")["label"] == "answered a question"
+    assert row("s-free", "/api/sessions")["label"] == "answered a question", "and on the sessions endpoint"
+    stored = json.loads((cfg.runtime_dir / "sessions" / "s-free.json").read_text())
+    assert stored["label"] == "answered a question"
+
+    # the hook keeps writing to the same record: a later event must not lose the label
+    rt.record_event({"session_id": "s-free", "hook_event_name": "SessionEnd", "cwd": str(repo["repo"])}, now=now)
+    assert row("s-free")["state"] == "ended" and row("s-free")["label"] == "answered a question"
+
+    # a session on a card can be labelled too -- the label is the session's, not the card's
+    assert call("POST", "/api/areas", {"name": "Ranking"})[0] == 200
+    card = call("POST", "/api/items", {"name": "Survey", "area": "Ranking"})[1]
+    assert call("POST", f"/api/items/{card['id']}/sessions", {"session_id": "s-carded"})[0] == 200
+    assert call("PATCH", "/api/sessions/s-carded", {"label": "the sweep"})[0] == 200
+    assert call("GET", f"/api/items/{card['id']}")[1]["sessions"][0]["label"] == "the sweep"
+
+    # "" clears it, and the row is back to plain unattached
+    assert call("PATCH", "/api/sessions/s-free", {"label": ""})[1] == {"session_id": "s-free", "label": ""}
+    assert row("s-free")["label"] == ""
+    assert "label" not in json.loads((cfg.runtime_dir / "sessions" / "s-free.json").read_text())
+
+    # a label needs a session the hook has actually seen, and has to be asked for
+    assert call("PATCH", "/api/sessions/s-nobody", {"label": "x"}) == (404, {"error": "no runtime record for that session"})
+    assert call("PATCH", "/api/sessions/s-free", {"title": "x"})[0] == 400, "PATCH without `label` says nothing"
+    assert call("PATCH", "/api/sessions/s%20bad", {"label": "x"})[0] == 400, "an id we would never write is refused"
+
+    # the rail filters on it, offers the labelled ones back, and the tag has a style
+    with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
+        js = res.read().decode()
+    assert "function railRows(" in js and "state.showLabelled" in js and "openLabelPop" in js
+    assert "labelled · show" in js, "the count of what the label dropped, one click from coming back"
+    with urllib.request.urlopen(server["url"] + "/static/style.css", timeout=10) as res:
+        css = res.read().decode()
+    assert any(line.startswith(".srow .where.tag{") for line in css.splitlines())

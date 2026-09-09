@@ -163,6 +163,7 @@ class App:
             "title": sess.get("title") or "",
             "auto_title": "",
             "last_prompt": "",
+            "label": "",  # yours, and only on the runtime record: see RuntimeStore.set_label
             "state": UNKNOWN,
             "attention": None,
             "last_event": None,
@@ -184,6 +185,7 @@ class App:
             plan = resume_plan(sid, rec, state)
             view.update(
                 state=state,
+                label=rec.get("label") or "",
                 attention=rec.get("attention") if state == NEEDS_YOU else None,
                 last_event=rec.get("last_event"),
                 updated_at=rec.get("updated_at"),
@@ -551,6 +553,27 @@ class App:
             "areas": self.items.areas(),
         }
 
+    def label_session(self, sid: str, body: dict) -> dict:
+        """Label a session, or clear the label with "".
+
+        A session on no card sits in the rail's *Unattached* list until something
+        happens to it, and plenty of sessions never deserve a card -- a question
+        answered, a one-off in another repo. A label is how you say so: it takes
+        the row out of that list without hiding it anywhere else, and says what
+        it was when you come back to it.
+
+        The label belongs to the session, not to any card, so it is stored on the
+        runtime record and needs one to exist (404 otherwise).
+        """
+        if not _ID_RE.match(sid):
+            raise ApiError(400, "bad session id")
+        if "label" not in body:
+            raise ApiError(400, 'label is required ("" clears it)')
+        rec = self.runtime.set_label(sid, body.get("label"))
+        if rec is None:
+            raise ApiError(404, "no runtime record for that session")
+        return {"session_id": sid, "label": rec.get("label") or ""}
+
     def resume(self, sid: str) -> dict:
         if not _ID_RE.match(sid):
             raise ApiError(400, "bad session id")
@@ -576,6 +599,7 @@ class App:
         ("PATCH", r"^/api/items/([^/]+)/sessions/([^/]+)$", "update_session"),
         ("DELETE", r"^/api/items/([^/]+)/sessions/([^/]+)$", "detach_session"),
         ("GET", r"^/api/sessions$", "recent_sessions"),
+        ("PATCH", r"^/api/sessions/([^/]+)$", "label_session"),
         ("GET", r"^/api/sessions/([^/]+)/resume$", "resume"),
     )
 

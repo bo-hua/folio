@@ -2,8 +2,8 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from folio.runtime import (
-    ENDED, INACTIVE, NEEDS_YOU, READY, WORKING, RuntimeStore, aggregate_attention, effective_state, is_spare, iso,
-    subagent_busy, transition,
+    ENDED, INACTIVE, LABEL_MAX, NEEDS_YOU, READY, WORKING, RuntimeStore, aggregate_attention, clean_label,
+    effective_state, is_spare, iso, subagent_busy, transition,
 )
 
 SID = "0b1c2d3e-4f50-4617-8a9b-0c1d2e3f4a5b"
@@ -307,3 +307,39 @@ def test_a_spare_is_a_background_session_nobody_has_prompted_yet(tmp_path):
     # and a background session that has stopped once has been prompted at least once
     assert is_spare({"background": True, "last_event": "Stop", "state": READY}) is False
     assert is_spare({"background": True, "last_event": "SessionEnd", "state": ENDED}) is False
+
+
+def test_a_label_is_yours_and_survives_the_hook(tmp_path):
+    """A label is the one thing in a session record a person writes: it says you have
+    dealt with a session that is on no card, which is what takes it out of the rail's
+    Unattached list. The hook keeps writing to the same record, so the label has to
+    survive every event that lands afterwards -- and clear cleanly when you say so."""
+    store = RuntimeStore(tmp_path / "runtime")
+    assert store.set_label(SID, "scratch") is None, "no record yet: nothing to label"
+
+    t0 = datetime(2026, 9, 8, 9, 0, tzinfo=timezone.utc)
+    store.record_event(ev("UserPromptSubmit"), now=t0)
+    assert "label" not in store.get(SID), "a session starts unlabelled"
+
+    assert store.set_label(SID, "  asked\na question  ")["label"] == "asked a question", "one line, trimmed"
+    assert store.get(SID)["label"] == "asked a question"
+
+    # the hook fires on: state moves, the label stays put
+    store.record_event(ev("Stop"), now=t0 + timedelta(seconds=30))
+    rec = store.get(SID)
+    assert (rec["state"], rec["attention"], rec["label"]) == (NEEDS_YOU, "review", "asked a question")
+
+    # relabelling replaces; "" (or whitespace, or None) removes the key entirely
+    assert store.set_label(SID, "someone else's job")["label"] == "someone else's job"
+    assert "label" not in store.set_label(SID, "   ")
+    assert "label" not in store.get(SID)
+    store.set_label(SID, "back")
+    assert "label" not in store.set_label(SID, None)
+
+    # a label is a note in a rail row, not an essay
+    assert store.set_label(SID, "x" * 200)["label"] == "x" * LABEL_MAX
+    assert clean_label(None) == "" and clean_label("a\t b") == "a b"
+
+    # an id we would never write is refused rather than reaching the filesystem
+    assert store.set_label("../../etc/passwd", "no") is None
+    assert not list(store.sessions_dir.glob("*.tmp"))

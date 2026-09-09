@@ -1,10 +1,11 @@
 """Ephemeral Claude Code session state, written by the hook and read by the UI.
 
 One small JSON file per session under <data>/runtime/sessions/. Only metadata
-is stored: session id, coarse state, timestamps, cwd, permission mode, pid, and
-the path of Claude Code's own transcript. Never prompts, responses, tool
-arguments, transcript *contents* or code -- `transcript.py` reads the session's
-title out of that file at request time and hands it straight to the UI.
+is stored: session id, coarse state, timestamps, cwd, permission mode, pid, the
+path of Claude Code's own transcript, and the one field a person writes -- the
+`label` you can put on a session (see `set_label`). Never prompts, responses,
+tool arguments, transcript *contents* or code -- `transcript.py` reads the
+session's title out of that file at request time and hands it straight to the UI.
 
 This module is the Claude-specific boundary: `transition()` knows about Claude
 Code hook event names; everything else just consumes coarse states.
@@ -44,6 +45,12 @@ _WORKING_EVENTS = {
     "PostCompact",
 }
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+LABEL_MAX = 48  # a label is a note to yourself, not a description: it sits inside a rail row
+
+
+def clean_label(value: str | None) -> str:
+    """One short line, or "" for no label. Newlines and runs of space collapse."""
+    return re.sub(r"\s+", " ", str(value or "")).strip()[:LABEL_MAX]
 
 
 def utc_now() -> datetime:
@@ -335,13 +342,47 @@ class RuntimeStore:
                 record["pid"], record["background"] = process_finder()
             except Exception:  # never let process discovery break the hook
                 pass
+        self._write(record)
+        return record
+
+    def _write(self, record: dict) -> None:
+        session_id = record["session_id"]
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         # The lock makes sharing a temp file safe; naming it per process makes it safe
         # even without one (see `locked`).
         tmp = self.sessions_dir / f"{session_id}.json.{os.getpid()}.tmp"
         tmp.write_text(json.dumps(record, indent=1, sort_keys=True), encoding="utf-8")
         os.replace(tmp, self._path(session_id))
-        return record
+
+    def set_label(self, session_id: str, label: str | None) -> dict | None:
+        """Put your own short label on a session, or clear it with "".
+
+        The one field here a person writes. It says you have accounted for a
+        session that is on no card -- "scratch", "answered a question", "someone
+        else's job" -- which is what takes it out of the rail's *Unattached*
+        inbox without inventing a card for it. Nothing else reads it: it is a
+        note to you, and a filter.
+
+        It lives with the session's own record rather than in `items/` because it
+        is only ever about this session and should die with it: a pruned record
+        takes its label along, and by then there is no row left to declutter.
+
+        Returns the stored record, or None when there is no record to label (a
+        session the hook has never seen) or the id is not one we would write.
+        """
+        if not _SAFE_ID.match(session_id or ""):
+            return None
+        with self.locked():
+            record = self.get(session_id)
+            if record is None:
+                return None
+            cleaned = clean_label(label)
+            if cleaned:
+                record["label"] = cleaned
+            else:
+                record.pop("label", None)
+            self._write(record)
+            return record
 
     def prune_ended(self, older_than: timedelta = timedelta(days=7), now: datetime | None = None) -> int:
         """Housekeeping: drop records of sessions that ended long ago."""

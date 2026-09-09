@@ -16,6 +16,7 @@ Everything is served from the loopback bind address (`127.0.0.1:4317` by default
 | POST | `/api/items/<id>/sessions` | attach a session |
 | PATCH, DELETE | `/api/items/<id>/sessions/<sid>` | retitle / detach a session |
 | GET | `/api/sessions[?all=1]` | sessions the hook has observed, plus the same `spares` count |
+| PATCH | `/api/sessions/<sid>` | label a session (`""` clears it) |
 | GET | `/api/sessions/<sid>/resume` | how to get back into that session |
 
 Notes:
@@ -29,6 +30,14 @@ Notes:
   on) and `item` (the first of them, or `null`).
 - `PATCH /api/items/<id>/sessions/<sid>` with `title` renames the session on every
   card it sits on: the title belongs to the session, not to one card.
+- `PATCH /api/sessions/<sid>` with `label` marks a session with one short line of your
+  own — `{"label": "answered a question"}`; `""` removes it. Every session carries
+  `label` (`""` when unlabelled). A labelled session drops out of the rail's
+  *Unattached* list, which is otherwise everything on no card; the rail offers the
+  labelled ones back on request, and no other view filters on it. The label is the one
+  field of a session record a person writes, so it lives on the runtime record with the
+  rest of that session's state and needs one to exist (`404` if the hook has never seen
+  the session, `400` without a `label` key).
 - Every session carries `spare` (bool). A spare is a background session Claude Code
   started ahead of the next job and nothing has prompted yet: not listed until its
   first prompt lands, unless you attached it to a card yourself. See

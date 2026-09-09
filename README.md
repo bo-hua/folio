@@ -116,7 +116,11 @@ and the app lays it out.
 
 - **Sessions rail (left)** — every session the hook has seen, grouped by state.
   Drag a row onto a card to attach it; click to fly to it. Filter to *Unattached*
-  (your inbox) or *Needs you*.
+  (your inbox) or *Needs you*. Not every session deserves a card — a question
+  answered, a one-off in another repo — so *label* one (the tag on its row) to say
+  you have dealt with it: it leaves *Unattached*, keeps saying what it was, and the
+  line at the bottom of that list brings the labelled ones back whenever you want
+  the whole inbox.
 - **Canvas (centre)** — areas side by side, children nested inside their parent.
   Drag a card into another to make it a child, onto an edge to reorder, onto empty
   space to promote it. Attention glows amber and bubbles up; **J** walks you
