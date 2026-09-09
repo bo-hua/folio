@@ -1,10 +1,12 @@
 """Ephemeral Claude Code session state, written by the hook and read by the UI.
 
 One small JSON file per session under <data>/runtime/sessions/. Only metadata
-is stored: session id, coarse state, timestamps, cwd, permission mode, pid, and
-the path of Claude Code's own transcript. Never prompts, responses, tool
-arguments, transcript *contents* or code -- `transcript.py` reads the session's
-title out of that file at request time and hands it straight to the UI.
+is stored: session id, coarse state, timestamps, cwd, permission mode, pid, the
+path of Claude Code's own transcript, and the one field a person writes --
+`hidden`, set when you tuck a session out of the rail's Unattached list (see
+`set_hidden`). Never prompts, responses, tool arguments, transcript *contents*
+or code -- `transcript.py` reads the session's title out of that file at request
+time and hands it straight to the UI.
 
 This module is the Claude-specific boundary: `transition()` knows about Claude
 Code hook event names; everything else just consumes coarse states.
@@ -17,7 +19,7 @@ import re
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Callable, Iterable, Iterator
 
 try:
     import fcntl
@@ -335,13 +337,66 @@ class RuntimeStore:
                 record["pid"], record["background"] = process_finder()
             except Exception:  # never let process discovery break the hook
                 pass
+        self._write(record)
+        return record
+
+    def _write(self, record: dict) -> None:
+        session_id = record["session_id"]
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         # The lock makes sharing a temp file safe; naming it per process makes it safe
         # even without one (see `locked`).
         tmp = self.sessions_dir / f"{session_id}.json.{os.getpid()}.tmp"
         tmp.write_text(json.dumps(record, indent=1, sort_keys=True), encoding="utf-8")
         os.replace(tmp, self._path(session_id))
-        return record
+
+    def _set_hidden(self, session_id: str, hidden: bool) -> bool:
+        """One record, caller holds the lock. False when there is no such record."""
+        record = self.get(session_id)
+        if record is None:
+            return False
+        if bool(record.get("hidden")) != hidden:  # already so: leave the file alone
+            if hidden:
+                record["hidden"] = True
+            else:
+                record.pop("hidden", None)
+            self._write(record)
+        return True
+
+    def set_hidden(self, session_id: str, hidden: bool = True) -> dict | None:
+        """Tuck a session out of the rail's Unattached list, or put it back.
+
+        The one field here a person sets. *Unattached* is a list of sessions on no
+        card, and most sessions never get one -- a question answered, a one-off in
+        another repo -- so it silts up until each record ages out a week later.
+        Hiding one says "not this, ever": it leaves that list and nothing else, and
+        the rail always says how many are hidden and can list them again.
+
+        It lives with the session's own record rather than in `items/` because it is
+        only ever about this session and should die with it: a pruned record takes
+        its `hidden` along, and by then there is no row left to declutter.
+
+        Returns the stored record, or None when the hook has never seen the session
+        or the id is not one we would write.
+        """
+        if not _SAFE_ID.match(session_id or ""):
+            return None
+        with self.locked():
+            return self.get(session_id) if self._set_hidden(session_id, bool(hidden)) else None
+
+    def set_hidden_many(self, session_ids: Iterable[str], hidden: bool = True) -> list[str]:
+        """The same for a list of sessions, under one lock -- clearing a rail full of
+        old sessions is one gesture, and must not be one lock round-trip per row.
+
+        Returns the ids that exist and are now in the asked-for state; ids the hook
+        has never seen are skipped rather than failing the lot.
+        """
+        done = []
+        with self.locked():
+            for sid in session_ids:
+                sid = str(sid or "")
+                if _SAFE_ID.match(sid) and self._set_hidden(sid, bool(hidden)):
+                    done.append(sid)
+        return done
 
     def prune_ended(self, older_than: timedelta = timedelta(days=7), now: datetime | None = None) -> int:
         """Housekeeping: drop records of sessions that ended long ago."""

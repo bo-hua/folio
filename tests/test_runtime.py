@@ -307,3 +307,40 @@ def test_a_spare_is_a_background_session_nobody_has_prompted_yet(tmp_path):
     # and a background session that has stopped once has been prompted at least once
     assert is_spare({"background": True, "last_event": "Stop", "state": READY}) is False
     assert is_spare({"background": True, "last_event": "SessionEnd", "state": ENDED}) is False
+
+
+def test_hiding_a_session_is_yours_and_survives_the_hook(tmp_path):
+    """`hidden` is the one thing in a session record a person sets: it takes a session
+    out of the rail's Unattached list and nothing else. The hook keeps writing to the
+    same record, so it has to survive every event that lands afterwards -- and a rail
+    full of old sessions has to clear in one gesture, under one lock."""
+    store = RuntimeStore(tmp_path / "runtime")
+    assert store.set_hidden(SID) is None, "no record yet: nothing to hide"
+
+    t0 = datetime(2026, 9, 8, 9, 0, tzinfo=timezone.utc)
+    store.record_event(ev("UserPromptSubmit"), now=t0)
+    assert "hidden" not in store.get(SID), "a session starts in the list"
+
+    assert store.set_hidden(SID)["hidden"] is True
+    # the hook fires on: state moves, hidden stays put
+    store.record_event(ev("Stop"), now=t0 + timedelta(seconds=30))
+    rec = store.get(SID)
+    assert (rec["state"], rec["attention"], rec["hidden"]) == (NEEDS_YOU, "review", True)
+
+    # putting it back drops the key rather than storing a false
+    assert "hidden" not in store.set_hidden(SID, False)
+    assert "hidden" not in store.get(SID)
+
+    # a whole list at once, in one lock -- ids we have never seen are skipped, not fatal
+    others = ["s-a", "s-b", "s-c"]
+    for sid in others:
+        store.record_event({"session_id": sid, "hook_event_name": "Stop"}, now=t0)
+    assert store.set_hidden_many([*others, "s-never", "../../etc/passwd"]) == others
+    assert all(store.get(sid)["hidden"] is True for sid in others)
+    assert store.get("s-never") is None
+    assert store.set_hidden_many(others, False) == others
+    assert all("hidden" not in store.get(sid) for sid in others)
+
+    # an id we would never write is refused rather than reaching the filesystem
+    assert store.set_hidden("../../etc/passwd") is None
+    assert not list(store.sessions_dir.glob("*.tmp"))

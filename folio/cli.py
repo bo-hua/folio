@@ -132,9 +132,12 @@ def cmd_sessions(args) -> int:
         where = s["worktree"] or s["cwd"] or "-"
         branch = f"[{s['branch']}]" if s["branch"] else ""
         print(f"{(s['updated_at'] or '-')[:19]:20} {s['short_id']:9} {s['state']:9} {where} {branch}")
-        title = s["title"] or s["auto_title"]
-        if title:
-            print(f"{'':20} {title}")
+        # hidden: you took it out of the rail's Unattached list. Still listed here.
+        line = s["title"] or s["auto_title"]
+        if s.get("hidden"):
+            line = f"{line} · hidden" if line else "hidden"
+        if line:
+            print(f"{'':20} {line}")
     standing_by = (data.get("spares") or {}).get("standing_by", 0)
     if standing_by:
         # Claude Code's pre-started next background session: no prompt yet, nothing to resume.

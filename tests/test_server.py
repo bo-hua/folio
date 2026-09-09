@@ -631,3 +631,68 @@ def test_a_session_can_sit_on_several_cards(server):
     # the old opt-in: exclusive leaves every other card
     assert call("POST", f"/api/items/{proto['id']}/sessions", {"session_id": "s-shared", "exclusive": True})[0] == 200
     assert on() == [proto["id"]]
+
+
+def test_hiding_sessions_clears_the_unattached_list(server):
+    """Unattached lists sessions on no card, and most sessions never get one -- a question
+    answered, a one-off in another repo -- so it silts up until each record ages out a week
+    later. Hiding is the whole gesture: no name, no card. It takes a row out of that list
+    and nothing else, one at a time or a fortnight's worth in a single request."""
+    call, cfg, repo = server["call"], server["config"], server["repo"]
+    rt = RuntimeStore(cfg.runtime_dir)
+    now = datetime.now(timezone.utc)
+    ids = ["s-one", "s-two", "s-three"]
+    for sid in ids:
+        rt.record_event({"session_id": sid, "hook_event_name": "Stop", "cwd": str(repo["repo"])}, now=now)
+
+    def row(sid, path="/api/overview"):
+        return next(s for s in call("GET", path)[1]["sessions"] if s["id"] == sid)
+
+    assert row("s-one")["hidden"] is False, "a session starts in the list"
+
+    status, body = call("PATCH", "/api/sessions/s-one", {"hidden": True})
+    assert (status, body) == (200, {"session_id": "s-one", "hidden": True})
+    assert row("s-one")["hidden"] is True
+    assert row("s-one", "/api/sessions")["hidden"] is True, "and on the sessions endpoint"
+    assert json.loads((cfg.runtime_dir / "sessions" / "s-one.json").read_text())["hidden"] is True
+
+    # the hook keeps writing to the same record: a later event must not un-hide it
+    rt.record_event({"session_id": "s-one", "hook_event_name": "SessionEnd", "cwd": str(repo["repo"])}, now=now)
+    assert row("s-one")["state"] == "ended" and row("s-one")["hidden"] is True
+
+    # the whole list in one request -- one gesture in the UI, one Undo
+    status, body = call("POST", "/api/sessions/hide", {"session_ids": ids, "hidden": True})
+    assert status == 200 and body["count"] == 3 and sorted(body["sessions"]) == sorted(ids)
+    assert all(row(sid)["hidden"] is True for sid in ids)
+    # ...and back again
+    assert call("POST", "/api/sessions/hide", {"session_ids": ids, "hidden": False})[1]["count"] == 3
+    assert all(row(sid)["hidden"] is False for sid in ids)
+    assert "hidden" not in json.loads((cfg.runtime_dir / "sessions" / "s-one.json").read_text())
+
+    # a session the hook has never seen is skipped rather than failing the batch
+    body = call("POST", "/api/sessions/hide", {"session_ids": ["s-two", "s-nobody"], "hidden": True})[1]
+    assert body["sessions"] == ["s-two"]
+
+    # hiding says nothing about cards: attach a hidden session and it is on the card as usual
+    assert call("POST", "/api/areas", {"name": "Ranking"})[0] == 200
+    card = call("POST", "/api/items", {"name": "Survey", "area": "Ranking"})[1]
+    assert call("POST", f"/api/items/{card['id']}/sessions", {"session_id": "s-two"})[0] == 200
+    assert call("GET", f"/api/items/{card['id']}")[1]["sessions"][0]["hidden"] is True
+
+    # bad asks
+    assert call("PATCH", "/api/sessions/s-nobody", {"hidden": True}) == (404, {"error": "no runtime record for that session"})
+    assert call("PATCH", "/api/sessions/s-one", {"title": "x"})[0] == 400, "PATCH without `hidden` says nothing"
+    assert call("PATCH", "/api/sessions/s%20bad", {"hidden": True})[0] == 400, "an id we would never write is refused"
+    assert call("POST", "/api/sessions/hide", {"session_ids": []})[0] == 400
+    assert call("POST", "/api/sessions/hide", {"hidden": True})[0] == 400
+
+    # the rail filters on it, offers a bulk hide and a way back, and the button has a style
+    with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
+        js = res.read().decode()
+    assert "function railRows(" in js and "state.showHidden" in js and "function hideSessions(" in js
+    assert "Hide all ${unhidden.length}" in js, "one gesture for a list full of old sessions"
+    assert "hidden · show" in js and "Unhide all ${tucked}" in js, "and the ways back"
+    with urllib.request.urlopen(server["url"] + "/static/style.css", timeout=10) as res:
+        css = res.read().decode()
+    assert any(line.startswith(".srow .where.act{") for line in css.splitlines())
+    assert any(line.startswith(".rail-bulk{") for line in css.splitlines())

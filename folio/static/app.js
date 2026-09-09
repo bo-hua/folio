@@ -21,7 +21,7 @@ const FOCUS_MODES = {
 const FOCUS_ORDER = ['all', 'done', 'live'];
 
 let OV = null, AREAS = [], CARDS = [], SESSIONS = [], SPARES = { standing_by: 0 };
-const state = { cam: { x: 16, y: 8, s: 0.9 }, selected: null, detail: null, railFilter: 'all', allRepos: false, attnCursor: -1, resumeOpen: null, focus: 'all' };
+const state = { cam: { x: 16, y: 8, s: 0.9 }, selected: null, detail: null, railFilter: 'all', showHidden: false, allRepos: false, attnCursor: -1, resumeOpen: null, focus: 'all' };
 const collapsed = new Set();
 const unfolded = new Set(); // parents whose done-fold you have opened (see foldKids)
 let VISIBLE = null; // ids the filter keeps, or null when nothing is filtered
@@ -96,6 +96,17 @@ function computeVisible() {
 // drops the row too. An unattached row has no card to follow, so it always stays --
 // and a session that needs you keeps its cards visible, so it can never be hidden here.
 const railVisible = s => { const cs = cardsOf(s); return !cs.length || cs.some(isVisible); };
+// The rail's own filter, applied before the canvas one above. *Unattached* is a list of
+// sessions on no card, and most sessions never get one -- a question answered, a one-off
+// in another repo -- so it silts up with a week of them and stops being useful. Hiding a
+// row takes it out of this list and nothing else. `tucked` counts what that hid, so the
+// rail can always say so and list them again (see renderRail's line at the bottom).
+function railRows(list, filter, withHidden) {
+  if (filter === 'attention') return { rows: list.filter(s => s.state === 'needs_you'), tucked: 0 };
+  if (filter !== 'unattached') return { rows: list, tucked: 0 };
+  const free = list.filter(s => !s.items.length);
+  return { rows: withHidden ? free : free.filter(s => !s.hidden), tucked: free.filter(s => s.hidden).length };
+}
 const hiddenCount = () => VISIBLE ? CARDS.length - VISIBLE.size : 0;
 // --- the done fold. Finished work piles up under a long-lived parent, and a card with a dozen
 // done children was a column taller than the rest of the canvas put together. So a long list
@@ -148,7 +159,7 @@ async function load() {
   OV = await api('GET', `/api/overview${state.allRepos ? '?all=1' : ''}`);
   AREAS = OV.areas.map(a => ({ id: a.name, name: a.name, count: a.count }));
   CARDS = OV.items.map(i => ({ id: i.id, name: i.name, area: i.area, parent: i.parent || null, order: i.order, lifecycle: i.lifecycle, human: i.human_status, parkNote: i.park_note || '', hasAi: i.has_ai_state, updated: i.updated }));
-  SESSIONS = OV.sessions.map(s => ({ id: s.id, short: s.short_id, title: s.title || '', autoTitle: s.auto_title || '', prompt: s.last_prompt || '', state: s.state, attention: s.attention, updated: s.updated_at, lastEvent: s.last_event, cwd: s.cwd, branch: s.branch, inRepo: s.in_repo, items: s.items || (s.item ? [s.item] : []), resume: s.resume }));
+  SESSIONS = OV.sessions.map(s => ({ id: s.id, short: s.short_id, title: s.title || '', autoTitle: s.auto_title || '', prompt: s.last_prompt || '', hidden: !!s.hidden, state: s.state, attention: s.attention, updated: s.updated_at, lastEvent: s.last_event, cwd: s.cwd, branch: s.branch, inRepo: s.in_repo, items: s.items || (s.item ? [s.item] : []), resume: s.resume }));
   // Claude Code's pre-started next background session(s): not sessions yet, so the server
   // counts them instead of listing them -- the rail shows one quiet line, never a row.
   SPARES = OV.spares || { standing_by: 0 };
@@ -428,14 +439,43 @@ function renderAttnPill() {
   if (n) { pill.append(h('i', { class: 'dot needs_you', style: 'margin-right:7px' }), `${n} need${n === 1 ? 's' : ''} you`); if (working) pill.append(h('span', { class: 'muted', style: 'margin-left:6px;font-weight:400' }, `· ${working} working`)); pill.style.borderColor = 'var(--attn)'; pill.style.color = 'var(--attn-ink)'; }
   else { pill.append(working ? h('i', { class: 'dot working', style: 'margin-right:7px' }) : '', working ? `${working} working` : 'All quiet'); pill.style.borderColor = ''; pill.style.color = ''; }
 }
+// Hiding: one row, or a whole list of them in one request (and one Undo). Nothing is
+// destroyed and nothing is named -- a hidden session only leaves the Unattached list.
+const hideApi = (ids, hidden) => ids.length === 1
+  ? api('PATCH', `/api/sessions/${encodeURIComponent(ids[0])}`, { hidden })
+  : api('POST', '/api/sessions/hide', { session_ids: ids, hidden });
+function hideSessions(ss, hidden) {
+  const ids = ss.map(s => s.id); if (!ids.length) return Promise.resolve();
+  const what = ids.length === 1 ? `“${sessTitle(ss[0])}”` : `${ids.length} sessions`;
+  return mutate(() => hideApi(ids, hidden), {
+    msg: hidden ? `Hid ${what} — out of Unattached, still under All` : `${what} back in Unattached`,
+    undo: () => hideApi(ids, !hidden),
+  });
+}
+// The button at the end of an unattached row: hide it, or -- when you are looking at the
+// hidden ones -- put it back. A session on a card is not in that list, so it gets neither.
+function hideChip(s) {
+  if (s.items.length) return '';
+  if (s.hidden) return h('button', { class: 'where act', title: 'Hidden from Unattached — click to put it back in the list', onclick: () => hideSessions([s], false) }, 'hidden · unhide');
+  return h('button', { class: 'where act onhover', title: 'Hide it from Unattached. Nothing is deleted: it stays under All, and the line at the bottom of this list brings the hidden ones back.', onclick: () => hideSessions([s], true) }, 'hide');
+}
 function renderRail() {
   const rail = $('#rail'); rail.innerHTML = '';
-  let list = SESSIONS.slice();
-  if (state.railFilter === 'unattached') list = list.filter(s => !s.items.length);
-  if (state.railFilter === 'attention') list = list.filter(s => s.state === 'needs_you');
-  const shown = list.filter(railVisible), hidden = list.length - shown.length; // a row goes wherever its card went
-  list = shown;
+  const picked = railRows(SESSIONS, state.railFilter, state.showHidden), tucked = picked.tucked;
+  const shown = picked.rows.filter(railVisible), offBoard = picked.rows.length - shown.length; // a row goes wherever its card went
+  let list = shown;
+  const unhidden = state.railFilter === 'unattached' ? list.filter(s => !s.hidden) : [];
   $('#railCount').textContent = `${list.length}/${SESSIONS.length}`;
+  // Clearing out a rail that has collected a fortnight of one-off sessions is one gesture,
+  // not twenty: this hides exactly the rows listed below it, and the toast undoes the lot.
+  // Both bulk actions sit above the list -- under it they would be a screen of scrolling away.
+  const bulk = h('div', { class: 'rail-bulk' });
+  if (unhidden.length > 1) bulk.appendChild(h('button', { onclick: () => hideSessions(unhidden, true),
+    title: `Hide all ${unhidden.length} sessions listed here. Nothing is deleted — they stay under All, the line at the bottom lists them again, and Undo puts them straight back.` },
+    `Hide all ${unhidden.length}`));
+  if (state.showHidden && tucked) bulk.appendChild(h('button', { onclick: () => hideSessions(SESSIONS.filter(s => s.hidden && !s.items.length), false),
+    title: `Put all ${tucked} hidden sessions back in this list.` }, `Unhide all ${tucked}`));
+  if (bulk.children.length) rail.appendChild(bulk);
   let any = false;
   for (const [st, label] of RAIL_GROUPS) {
     const rows = list.filter(s => railState(s) === st); if (!rows.length) continue; any = true;
@@ -445,8 +485,8 @@ function renderRail() {
       const cards = cardsOf(s);
       const where = h('div', { class: 'wheres' }, cards.length
         ? cards.map(card => h('span', { class: 'where', 'data-id': card.id, title: `On “${card.name}” — click to go there` }, h('i', { class: `glyph ${lifecycle(card)}` }), card.name))
-        : h('span', { class: 'where none' }, 'unattached · drag onto a card'));
-      g.appendChild(h('div', { class: 'srow', 'data-sid': s.id, tabindex: '0', title: sessTip(s) }, h('i', { class: `dot ${s.state}` }),
+        : (s.hidden ? '' : h('span', { class: 'where none' }, 'unattached · drag onto a card')), hideChip(s));
+      g.appendChild(h('div', { class: `srow${s.hidden && !cards.length ? ' tucked' : ''}`, 'data-sid': s.id, tabindex: '0', title: sessTip(s) }, h('i', { class: `dot ${s.state}` }),
         h('div', { style: 'min-width:0' }, h('div', { class: 't' }, sessTitle(s)),
           s.prompt ? h('div', { class: 'p' }, s.prompt) : '',
           h('div', { class: 'm' }, s.branch ? h('span', { class: 'br' }, s.branch) : (s.cwd ? h('span', { class: 'cwd', title: s.cwd }, shortPath(s.cwd)) : ''), s.attention ? h('span', {}, `· ${s.attention}`) : '', h('span', { class: 'sid' }, s.short), h('span', { class: 'ago', title: agoTip(s) }, timeAgo(s.updated))),
@@ -454,9 +494,17 @@ function renderRail() {
     }
     rail.appendChild(g);
   }
-  if (!any) rail.appendChild(h('div', { class: 'rail-empty' }, hidden ? 'Every session here is on a card the filter hides.' : state.railFilter === 'unattached' ? 'Every session is attached to a card.' : state.railFilter === 'attention' ? 'Nothing needs you right now.' : 'No Claude sessions observed yet. Install the hook (folio hooks install) and start one.'));
-  if (hidden) rail.appendChild(h('button', { class: 'rail-hidden', title: `Their cards are hidden by the “${FOCUS_MODES[state.focus].label.toLowerCase()}” filter — click to show everything.`, onclick: () => setFocus('all') },
-    `${hidden} on hidden card${hidden === 1 ? '' : 's'}`));
+  if (!any) rail.appendChild(h('div', { class: 'rail-empty' }, offBoard ? 'Every session here is on a card the filter hides.' : state.railFilter === 'unattached' ? (tucked ? 'Nothing left in Unattached — the rest are hidden.' : 'Every session is attached to a card.') : state.railFilter === 'attention' ? 'Nothing needs you right now.' : 'No Claude sessions observed yet. Install the hook (folio hooks install) and start one.'));
+  if (offBoard) rail.appendChild(h('button', { class: 'rail-hidden', title: `Their cards are hidden by the “${FOCUS_MODES[state.focus].label.toLowerCase()}” filter — click to show everything.`, onclick: () => setFocus('all') },
+    `${offBoard} on hidden card${offBoard === 1 ? '' : 's'}`));
+  // Unattached leaves the hidden ones out -- but never silently. The count sits under the
+  // list and puts them back on screen with one click, so the whole list is always one
+  // click away; from there each row can be unhidden, or all of them at once.
+  if (state.railFilter === 'unattached' && tucked) {
+    rail.appendChild(h('button', { class: 'rail-hidden', onclick: () => { state.showHidden = !state.showHidden; $('#rail').scrollTop = 0; renderRail(); },
+      title: state.showHidden ? 'Back to the sessions you have not hidden.' : 'On no card, and you hid them: this list leaves them out. Click to list them here too — nothing was deleted.' },
+      state.showHidden ? `hide the ${tucked} again` : `${tucked} hidden · show ${tucked === 1 ? 'it' : 'them'}`));
+  }
   // The spare is Claude Code's next background session, started ahead of time: no prompt,
   // no title, nothing to open or attach. It used to sit under Ready as “Untitled”. Say it
   // exists, without giving it a row -- it gets one the moment a job claims it.
@@ -810,7 +858,7 @@ function endSessDrag(e) {
   d.srcEl.classList.remove('dragging'); stage.classList.remove('sess-drag'); if (d.ghost) d.ghost.remove(); clearDropTargets(); $('.rail').classList.remove('droptarget');
   const s = sessById(d.sid); if (!s) return;
   if (!d.moved) {
-    if (d.srcEl.classList.contains('srow')) { if (s.items.length) reveal(d.goto && s.items.includes(d.goto) ? d.goto : s.items[0]); else { d.srcEl.classList.add('flash'); hint('Unattached — drag it onto a card to attach'); } }
+    if (d.srcEl.classList.contains('srow')) { if (s.items.length) reveal(d.goto && s.items.includes(d.goto) ? d.goto : s.items[0]); else { d.srcEl.classList.add('flash'); hint('Unattached — drag it onto a card, or hide it to clear it from this list'); } }
     else if (d.from) select(d.from);
     return;
   }
@@ -818,7 +866,9 @@ function endSessDrag(e) {
   if (t.kind === 'card') attachSession(s, t.id, d.from);
   if (t.kind === 'detach') detachSession(s, t.id);
 }
-rail.addEventListener('pointerdown', e => { const row = e.target.closest('.srow'); if (!row || e.button !== 0) return; beginSessDrag(e, row.dataset.sid, row); row.setPointerCapture(e.pointerId); });
+// A button inside a row (hide, unhide) is a button, not a drag handle: leave it alone,
+// capture nothing, and let the click through.
+rail.addEventListener('pointerdown', e => { const row = e.target.closest('.srow'); if (!row || e.button !== 0 || e.target.closest('button')) return; beginSessDrag(e, row.dataset.sid, row); row.setPointerCapture(e.pointerId); });
 rail.addEventListener('pointermove', e => { if (sdrag) moveSessDrag(e); });
 rail.addEventListener('pointerup', endSessDrag); rail.addEventListener('pointercancel', endSessDrag);
 $$('.rail-filters .chip-btn[data-f]').forEach(b => b.addEventListener('click', () => { state.railFilter = b.dataset.f; $$('.rail-filters .chip-btn[data-f]').forEach(x => x.classList.toggle('on', x === b)); renderRail(); }));
