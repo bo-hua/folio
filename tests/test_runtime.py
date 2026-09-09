@@ -2,8 +2,8 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from folio.runtime import (
-    ENDED, INACTIVE, NEEDS_YOU, READY, WORKING, RuntimeStore, aggregate_attention, effective_state, is_spare, iso,
-    subagent_busy, transition,
+    ENDED, INACTIVE, NEEDS_YOU, READY, SNOOZED, WORKING, RuntimeStore, aggregate_attention, effective_state,
+    is_snoozed, is_spare, iso, snooze_left, subagent_busy, transition,
 )
 
 SID = "0b1c2d3e-4f50-4617-8a9b-0c1d2e3f4a5b"
@@ -112,6 +112,66 @@ def test_aggregate_attention_across_sessions():
     assert aggregate_attention([])["level"] is None
     agg = aggregate_attention([NEEDS_YOU, NEEDS_YOU, WORKING])
     assert (agg["needs_you"], agg["working"], agg["sessions"]) == (2, 1, 3)
+    # a snoozed attention is counted, and counts as neither: that is what makes the card quiet
+    agg = aggregate_attention([SNOOZED, SNOOZED, WORKING])
+    assert agg["level"] == WORKING and (agg["needs_you"], agg["snoozed"], agg["sessions"]) == (0, 2, 3)
+    assert aggregate_attention([SNOOZED, READY])["level"] is None
+    agg = aggregate_attention([SNOOZED, NEEDS_YOU])
+    assert agg["level"] == NEEDS_YOU and (agg["needs_you"], agg["snoozed"]) == (1, 1)
+    assert aggregate_attention([])["snoozed"] == 0
+
+
+def test_a_snooze_silences_one_attention_and_only_that_one(tmp_path):
+    """Reading a finished turn you cannot get to should not mean living with the ring.
+
+    Snoozing keeps the session exactly as it is -- still NEEDS_YOU, still listed -- and
+    only stops it counting. What it must never do is silence the *next* thing: the
+    record drops its snooze the moment the state or the reason behind it changes.
+    """
+    store = RuntimeStore(tmp_path / "runtime")
+    now = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
+    store.record_event(ev("Stop"), now=now)
+    rec = store.get(SID)
+    assert (rec["state"], rec["attention"]) == (NEEDS_YOU, "review")
+    assert is_snoozed(rec, now) is False and snooze_left(rec, now) is None
+
+    assert store.snooze([SID, "never-seen"], now + timedelta(hours=1)) == [SID], "unknown ids are skipped, not fatal"
+    rec = store.get(SID)
+    assert rec["snooze_until"] == iso(now + timedelta(hours=1))
+    assert rec["state"] == NEEDS_YOU and rec["attention"] == "review", "the session itself is untouched"
+    assert snooze_left(rec, now) == timedelta(hours=1)
+    assert is_snoozed(rec, now + timedelta(minutes=59)) is True
+    assert is_snoozed(rec, now + timedelta(minutes=61)) is False, "it wakes on its own"
+
+    # the idle notification a minute after the turn says nothing new -- it must not wake it
+    store.record_event(ev("Notification", notification_type="idle_prompt"), now=now + timedelta(minutes=1))
+    assert is_snoozed(store.get(SID), now + timedelta(minutes=1)) is True
+
+    # a prompt moves the session on, so the snooze is spent...
+    store.record_event(ev("UserPromptSubmit"), now=now + timedelta(minutes=2))
+    rec = store.get(SID)
+    assert rec["state"] == WORKING and "snooze_until" not in rec
+    # ...and the turn after it rings, an hour of quiet or not
+    store.record_event(ev("Stop"), now=now + timedelta(minutes=3))
+    rec = store.get(SID)
+    assert rec["state"] == NEEDS_YOU and is_snoozed(rec, now + timedelta(minutes=3)) is False
+
+    # a permission prompt raised while a snoozed review sits there is a different attention
+    store.snooze([SID], now + timedelta(days=1))
+    store.record_event(ev("PermissionRequest", tool_name="Bash"), now=now + timedelta(minutes=4))
+    rec = store.get(SID)
+    assert rec["attention"] == "permission" and "snooze_until" not in rec
+
+    # the duplicate Notification behind that same prompt changes nothing, so the snooze holds
+    store.snooze([SID], now + timedelta(hours=3))
+    store.record_event(ev("Notification", notification_type="permission_prompt"), now=now + timedelta(minutes=5))
+    assert is_snoozed(store.get(SID), now + timedelta(minutes=5)) is True
+
+    # waking takes the field off the record rather than leaving a stale stamp behind
+    assert store.snooze([SID], None) == [SID]
+    assert "snooze_until" not in store.get(SID)
+    assert store.snooze([SID], None) == [SID], "already awake: still reported, and the file is left alone"
+    assert store.snooze(["", "bad id"], now) == [], "ids we would never write are refused"
 
 
 def test_process_finder_records_pid_and_background(tmp_path):

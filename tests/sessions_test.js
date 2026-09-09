@@ -68,10 +68,10 @@ assert.equal(a.ownNeeds, 1); assert.equal(a.descNeeds, 0);
 a = attn('B'); assert.equal(a.needs, 1); assert.equal(a.ownNeeds, 1);
 a = attn('C'); assert.equal(a.working, 1); assert.equal(a.needs, 0);
 // the area header and the page's pill count sessions the same way: one needs you, one is working
-assert.deepEqual(areaAttn({ id: 'Work' }), { needs: 1, working: 1 });
+assert.deepEqual(areaAttn({ id: 'Work' }), { needs: 1, working: 1, snoozed: 0 });
 assert.equal(needsYouCount(), 1, 'the pill says "1 needs you", not one per card the session is on');
 set([A, B, C], [{ ...s1, items: ['A', 'C'] }, s2, s3]); // the same session on two *top-level* cards
-assert.deepEqual(areaAttn({ id: 'Work' }), { needs: 1, working: 1 }, 'still one, across separate trees');
+assert.deepEqual(areaAttn({ id: 'Work' }), { needs: 1, working: 1, snoozed: 0 }, 'still one, across separate trees');
 set([A, B, C], [s1, s2, s3]);
 
 // ---------------------------------------------------------------- which rows the filter keeps

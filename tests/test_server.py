@@ -691,8 +691,93 @@ def test_hiding_sessions_clears_the_unattached_list(server):
         js = res.read().decode()
     assert "function railRows(" in js and "state.showHidden" in js and "function hideSessions(" in js
     assert "Hide all ${unhidden.length}" in js, "one gesture for a list full of old sessions"
-    assert "hidden · show" in js and "Unhide all ${tucked}" in js, "and the ways back"
+    assert "· show ${tucked === 1 ? 'it' : 'them'}" in js and "Unhide all ${tucked}" in js, "and the ways back"
     with urllib.request.urlopen(server["url"] + "/static/style.css", timeout=10) as res:
         css = res.read().decode()
     assert any(line.startswith(".srow .where.act{") for line in css.splitlines())
     assert any(line.startswith(".rail-bulk{") for line in css.splitlines())
+
+
+def test_snoozing_a_session_quietens_its_cards_without_losing_it(server):
+    """A finished turn needs you and says so on every card it sits on. Once you have read
+    it and know you are not getting to it now, the ring is noise on top of the cards that
+    do need you -- so it can be silenced for an hour, three, or a day. The session does not
+    change: it stays `needs_you`, every list still has it, and it says how long is left.
+    What changes is the counting -- the roll-up that makes a card ring."""
+    call, cfg, repo = server["call"], server["config"], server["repo"]
+    rt = RuntimeStore(cfg.runtime_dir)
+    now = datetime.now(timezone.utc)
+    rt.record_event({"session_id": "s-read", "hook_event_name": "Stop", "cwd": str(repo["repo"])}, now=now)
+    rt.record_event({"session_id": "s-blocked", "hook_event_name": "PermissionRequest", "tool_name": "Bash",
+                     "cwd": str(repo["repo"])}, now=now)
+    assert call("POST", "/api/areas", {"name": "Ranking"})[0] == 200
+    card = call("POST", "/api/items", {"name": "Survey", "area": "Ranking"})[1]
+    for sid in ("s-read", "s-blocked"):
+        assert call("POST", f"/api/items/{card['id']}/sessions", {"session_id": sid})[0] == 200
+
+    def row(sid):
+        return next(s for s in call("GET", "/api/overview")[1]["sessions"] if s["id"] == sid)
+
+    def rollup():
+        return next(i for i in call("GET", "/api/overview")[1]["items"] if i["id"] == card["id"])["rollup"]
+
+    assert (row("s-read")["snoozed"], row("s-read")["snooze_until"]) == (False, None)
+    assert rollup()["level"] == "needs_you" and rollup()["needs_you"] == 2
+
+    status, body = call("POST", "/api/sessions/snooze", {"session_ids": ["s-read"], "minutes": 180})
+    assert status == 200 and body["count"] == 1 and body["sessions"] == ["s-read"] and body["minutes"] == 180
+    assert body["until"].endswith("Z")
+    r = row("s-read")
+    assert r["state"] == "needs_you" and r["attention"] == "review", "the session is exactly as it was"
+    assert r["snoozed"] is True and r["snooze_until"] == body["until"], "and says until when"
+    agg = rollup()
+    assert (agg["needs_you"], agg["snoozed"]) == (1, 1), "the silenced one is counted apart, not dropped"
+    assert agg["level"] == "needs_you", "the card still rings: the other session is blocked on you"
+    assert call("GET", f"/api/items/{card['id']}")[1]["attention"]["snoozed"] == 1, "and on the card's own endpoint"
+
+    # silence the second one too and the card goes quiet, with both sessions still there
+    assert call("POST", "/api/sessions/snooze", {"session_ids": ["s-read", "s-blocked"], "minutes": 60})[1]["count"] == 2
+    agg = rollup()
+    assert agg["level"] is None and (agg["needs_you"], agg["snoozed"], agg["sessions"]) == (0, 2, 2)
+
+    # a snooze is stored on the session's own record, next to `hidden`
+    rec = json.loads((cfg.runtime_dir / "sessions" / "s-read.json").read_text())
+    assert rec["snooze_until"].endswith("Z") and rec["state"] == "needs_you"
+
+    # ...and it silences that attention only: the next prompt ends the quiet at once
+    rt.record_event({"session_id": "s-read", "hook_event_name": "UserPromptSubmit", "cwd": str(repo["repo"])}, now=now)
+    assert row("s-read")["snoozed"] is False
+    assert "snooze_until" not in json.loads((cfg.runtime_dir / "sessions" / "s-read.json").read_text())
+
+    # waking is the same request with no time on it
+    assert call("POST", "/api/sessions/snooze", {"session_ids": ["s-blocked"], "minutes": 0})[1]["until"] is None
+    assert row("s-blocked")["snoozed"] is False and rollup()["level"] == "needs_you"
+
+    # a session the hook has never seen is skipped rather than failing the batch
+    assert call("POST", "/api/sessions/snooze",
+                {"session_ids": ["s-blocked", "s-nobody"], "minutes": 60})[1]["sessions"] == ["s-blocked"]
+
+    # bad asks
+    assert call("POST", "/api/sessions/snooze", {"session_ids": [], "minutes": 60})[0] == 400
+    assert call("POST", "/api/sessions/snooze", {"minutes": 60})[0] == 400
+    assert call("POST", "/api/sessions/snooze", {"session_ids": ["s-read"], "minutes": -5})[0] == 400
+    assert call("POST", "/api/sessions/snooze", {"session_ids": ["s-read"], "minutes": 99999})[0] == 400, "capped"
+    assert call("POST", "/api/sessions/snooze", {"session_ids": ["s-read"], "minutes": "1h"})[0] == 400
+    assert call("POST", "/api/sessions/snooze", {"session_ids": ["s-read"], "minutes": True})[0] == 400
+
+    # the page offers the three lengths, on the card and in the panel, and can wake them again
+    with urllib.request.urlopen(server["url"] + "/static/app.js", timeout=10) as res:
+        js = res.read().decode()
+    assert "const SNOOZE_OPTS = [['1 hour', 60], ['3 hours', 180], ['1 day', 1440]];" in js
+    assert "function openSnoozeMenu(" in js and "function snoozeSessions(" in js
+    assert "'/api/sessions/snooze'" in js
+    assert "'data-act': 'snooze'" in js and "'data-act': 'wake'" in js, "the off-switch, and the way back"
+    assert "if (loud) el.appendChild(h('i', { class: 'ring'" in js, "a card that needs you is circled"
+    with urllib.request.urlopen(server["url"] + "/static/style.css", timeout=10) as res:
+        css = res.read().decode()
+    lines = css.splitlines()
+    assert any(line.startswith(".card.attn > .ring{") for line in lines), "the ring is drawn"
+    assert any(line.startswith("@keyframes edgering{") for line in lines), "and it pulses"
+    assert any(line.startswith(".dot.needs_you.snoozed{") for line in lines), "a silenced dot stops ringing"
+    assert any(line.startswith(".zz{") for line in lines)
+    assert "@media (prefers-reduced-motion:reduce){" in css, "and the motion can be turned off"
