@@ -201,15 +201,23 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .card.collapsed::after{content:"";position:absolute;left:6px;right:6px;bottom:-4px;height:8px;border:1px solid var(--line);border-top:0;border-radius:0 0 10px 10px;background:var(--raised);z-index:-1}
 .kids-list > .card.collapsed,.col > .card.collapsed{margin-bottom:6px} /* room for the deck edge */
 .card.collapsed .stack2{position:absolute;left:12px;right:12px;bottom:-7px;height:6px;border:1px solid var(--line);border-top:0;border-radius:0 0 9px 9px;background:var(--bg);z-index:-2;opacity:.9}
-/* A card that needs you is circled: a solid ring in the attention colour, a wash of it beyond,
-   and one slow pulse travelling out from the edge -- readable across the canvas at any zoom, and
-   the only thing on the board that moves that slowly. `.ring` is a real element because ::after
-   is the collapsed deck edge and ::before is the drop hint, and one card can be all three. */
-.card.attn{border-color:var(--attn);box-shadow:0 0 0 2px var(--attn),0 0 0 6px var(--attn-glow),0 0 26px -2px var(--attn-glow),var(--shadow-1)}
-.card.attn.selected{box-shadow:0 0 0 2px var(--attn),0 0 0 6px var(--attn-glow),0 0 26px -2px var(--attn-glow),var(--shadow-2)}
-.card.attn > .ring{position:absolute;inset:-2px;border-radius:14px;border:2px solid var(--attn);pointer-events:none;animation:edgering 2.6s var(--ease) infinite}
-.card .card.attn > .ring{border-radius:12px}
-@keyframes edgering{0%{opacity:.75;transform:scale(1)}60%,100%{opacity:0;transform:scale(1.045)}}
+/* A card that needs you is circled: the attention colour on the border, a soft band of it just
+   inside, a wash bleeding further in, and a ring over the whole edge that brightens and fades --
+   readable across the canvas at any zoom, and the only thing on the board that moves that slowly.
+
+   Every part of it paints *inside* the card's own box, and that is not a style choice. A nested
+   card lives in its parent's `.kids > div`, which is `overflow: hidden` for the collapse
+   animation, and inside that clip box a child has 18px of room on the left, 3px above and below,
+   and none at all on the right -- so an outward ring came out sliced flat down its right-hand
+   side, and looked like a panel drawn too narrow. There is no room to be had either: a nested
+   card sits 14px from its parent's border, less than the glow alone.
+
+   `.ring` is a real element rather than a pseudo-element because the card already spends ::after
+   on the collapsed deck edge and ::before on the drop hint, and one card can be all three. */
+.card.attn{border-color:var(--attn);box-shadow:inset 0 0 0 4px var(--attn-soft),inset 0 0 18px -4px var(--attn-glow),var(--shadow-1)}
+.card.attn.selected{box-shadow:inset 0 0 0 4px var(--attn-soft),inset 0 0 18px -4px var(--attn-glow),var(--shadow-2)}
+.card.attn > .ring{position:absolute;inset:0;border-radius:inherit;border:2px solid var(--attn);pointer-events:none;animation:edgering 2.4s ease-in-out infinite}
+@keyframes edgering{0%,100%{opacity:.22}50%{opacity:1}}
 /* the snooze crescent: on a ringing card it is the off-switch, and it is not hidden until hover --
    the point of the ring is that you can act on it the moment you see it */
 .zz{flex:none;width:20px;height:20px;margin:-2px 0;border-radius:6px;color:var(--attn-ink);display:grid;place-items:center;transition:background .15s,color .15s}
@@ -513,7 +521,7 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 /* Someone who has asked for less motion still needs to see which card is asking for them: the
    ring, the pulsing dot and the breathing dot all fall back to their solid selves. */
 @media (prefers-reduced-motion:reduce){
-  .card.attn > .ring{animation:none;opacity:.55}
+  .card.attn > .ring{animation:none;opacity:.8}
   .dot.needs_you::after{animation:none;opacity:.5}
   .dot.working{animation:none}
 }

@@ -822,3 +822,42 @@ def test_a_chip_ends_in_an_ellipsis_rather_than_mid_word(server):
         "h('i', { class: 'dot ' + s.state }), ellip(sessTitle(s))",                          # the session ghost
     ):
         assert builder in js, f"unwrapped label: {builder}"
+
+
+def test_a_nested_card_wears_its_whole_ring(server):
+    """A card that needs you is circled, and a nested one has nowhere to put an outward ring.
+
+    Children live in their parent's `.kids > div`, which is `overflow: hidden` so the collapse
+    can animate its height. Inside that clip box a child has 18px of room on the left, 3px above
+    and below, and none at all on the right -- so a ring drawn outside the card came out sliced
+    flat down its right-hand side. Nor is there room to be found: a nested card sits 14px from
+    its parent's border, less than the glow alone.
+
+    So the whole treatment paints inside the card's own box, which this pins down: no attention
+    colour in an outward shadow, no negative inset on the ring, and no pulse that grows out of
+    the box it lives in.
+    """
+    with urllib.request.urlopen(server["url"] + "/static/style.css", timeout=10) as res:
+        css = res.read().decode()
+    lines = css.splitlines()
+
+    def rule(prefix):
+        return next(line for line in lines if line.startswith(prefix))
+
+    # the constraint this all exists for -- if it ever goes, the rest can be revisited
+    assert "overflow:hidden" in rule(".kids > div{"), "the parent clips its children; that is why the ring is inset"
+
+    for prefix in (".card.attn{", ".card.attn.selected{"):
+        shadows = rule(prefix).split("box-shadow:")[1].rstrip("}")
+        for layer in shadows.split(","):
+            if "attn" in layer:
+                assert "inset" in layer, f"{prefix} paints the attention colour outside the card: {layer.strip()}"
+
+    ring = rule(".card.attn > .ring{")
+    assert "inset:0" in ring, f"the ring must sit inside the card's own box: {ring}"
+    assert "-" not in ring.split("inset:")[1].split(";")[0], "a negative inset puts the ring where the parent clips it"
+    assert "border-radius:inherit" in ring, "so it follows the card's corners at any nesting depth"
+
+    pulse = css.split("@keyframes edgering{")[1].split("}\n")[0]
+    assert "scale(" not in pulse, f"a growing pulse leaves the box and gets clipped: {pulse}"
+    assert "opacity" in pulse, "the pulse is a brightening edge, which cannot overflow anything"
