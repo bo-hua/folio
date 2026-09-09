@@ -21,7 +21,7 @@ const FOCUS_MODES = {
 const FOCUS_ORDER = ['all', 'done', 'live'];
 
 let OV = null, AREAS = [], CARDS = [], SESSIONS = [], SPARES = { standing_by: 0 };
-const state = { cam: { x: 16, y: 8, s: 0.9 }, selected: null, detail: null, railFilter: 'all', showHidden: false, allRepos: false, attnCursor: -1, resumeOpen: null, focus: 'all' };
+const state = { cam: { x: 16, y: 8, s: 0.9 }, selected: null, detail: null, railFilter: 'all', showHidden: false, allRepos: true, attnCursor: -1, resumeOpen: null, focus: 'all' };
 const collapsed = new Set();
 const unfolded = new Set(); // parents whose done-fold you have opened (see foldKids)
 let VISIBLE = null; // ids the filter keeps, or null when nothing is filtered
@@ -129,7 +129,7 @@ function shortPath(p) { if (!p) return ''; const m = p.match(/^\/(?:Users|home)\
 function railState(s) { return ['needs_you', 'working', 'ready'].includes(s.state) ? s.state : 'ended'; }
 function isEditing() { const a = document.activeElement; return !!(a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT' || a.isContentEditable)); }
 function persist() {
-  try { localStorage.setItem('folio.collapsed', JSON.stringify([...collapsed])); localStorage.setItem('folio.unfolded', JSON.stringify([...unfolded])); localStorage.setItem('folio.cam', JSON.stringify(state.cam)); localStorage.setItem('folio.focus', state.focus); } catch (e) { /* private mode etc. */ }
+  try { localStorage.setItem('folio.collapsed', JSON.stringify([...collapsed])); localStorage.setItem('folio.unfolded', JSON.stringify([...unfolded])); localStorage.setItem('folio.cam', JSON.stringify(state.cam)); localStorage.setItem('folio.focus', state.focus); localStorage.setItem('folio.allRepos', state.allRepos ? '1' : '0'); } catch (e) { /* private mode etc. */ }
 }
 function restore() {
   try {
@@ -137,6 +137,7 @@ function restore() {
     (JSON.parse(localStorage.getItem('folio.unfolded') || '[]')).forEach(id => unfolded.add(id));
     const cam = JSON.parse(localStorage.getItem('folio.cam') || 'null'); if (cam && typeof cam.s === 'number') state.cam = cam;
     const f = localStorage.getItem('folio.focus'); if (f && FOCUS_MODES[f]) state.focus = f;
+    const ar = localStorage.getItem('folio.allRepos'); if (ar !== null) state.allRepos = ar === '1';  // unset = never chosen: keep the default
   } catch (e) { /* ignore */ }
 }
 
@@ -872,7 +873,7 @@ rail.addEventListener('pointerdown', e => { const row = e.target.closest('.srow'
 rail.addEventListener('pointermove', e => { if (sdrag) moveSessDrag(e); });
 rail.addEventListener('pointerup', endSessDrag); rail.addEventListener('pointercancel', endSessDrag);
 $$('.rail-filters .chip-btn[data-f]').forEach(b => b.addEventListener('click', () => { state.railFilter = b.dataset.f; $$('.rail-filters .chip-btn[data-f]').forEach(x => x.classList.toggle('on', x === b)); renderRail(); }));
-$('#allRepos').addEventListener('change', e => { state.allRepos = e.target.checked; refresh(); });
+$('#allRepos').addEventListener('change', e => { state.allRepos = e.target.checked; persist(); refresh(); });
 
 // ------------------------------------------------------------------ area menu + type-to-confirm
 // Deleting an Area is the one action folio cannot take back: the server rmtree's the
@@ -1077,6 +1078,7 @@ function hashCard() { const hsh = location.hash.slice(1); const m = hsh.match(/^
 
 (async function boot() {
   restore();
+  $('#allRepos').checked = state.allRepos;  // the markup ships it on; a remembered choice may say otherwise
   await poll();  // a server that is down at boot is reported in the indicator, not fatal: the ticker keeps trying and the page fills in when it answers
   setInterval(tick, 1000);  // one ticker: it advances the "checked … ago" label every second and polls whenever a read is due and safe
   document.addEventListener('visibilitychange', () => { if (!document.hidden) pollNow(); });
