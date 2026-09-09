@@ -16,7 +16,8 @@ Everything is served from the loopback bind address (`127.0.0.1:4317` by default
 | POST | `/api/items/<id>/sessions` | attach a session |
 | PATCH, DELETE | `/api/items/<id>/sessions/<sid>` | retitle / detach a session |
 | GET | `/api/sessions[?all=1]` | sessions the hook has observed, plus the same `spares` count |
-| PATCH | `/api/sessions/<sid>` | label a session (`""` clears it) |
+| PATCH | `/api/sessions/<sid>` | hide a session from the rail's *Unattached* list, or unhide it |
+| POST | `/api/sessions/hide` | the same for a list of sessions, in one request |
 | GET | `/api/sessions/<sid>/resume` | how to get back into that session |
 
 Notes:
@@ -30,14 +31,16 @@ Notes:
   on) and `item` (the first of them, or `null`).
 - `PATCH /api/items/<id>/sessions/<sid>` with `title` renames the session on every
   card it sits on: the title belongs to the session, not to one card.
-- `PATCH /api/sessions/<sid>` with `label` marks a session with one short line of your
-  own — `{"label": "answered a question"}`; `""` removes it. Every session carries
-  `label` (`""` when unlabelled). A labelled session drops out of the rail's
-  *Unattached* list, which is otherwise everything on no card; the rail offers the
-  labelled ones back on request, and no other view filters on it. The label is the one
-  field of a session record a person writes, so it lives on the runtime record with the
-  rest of that session's state and needs one to exist (`404` if the hook has never seen
-  the session, `400` without a `label` key).
+- `PATCH /api/sessions/<sid>` with `{"hidden": true}` takes a session out of the rail's
+  *Unattached* list (`false` puts it back), and `POST /api/sessions/hide` with
+  `{"session_ids": [...], "hidden": true}` does a whole list in one request, returning
+  the ids it changed — that is the UI's *Hide all N*, and one Undo. Every session
+  carries `hidden` (bool). Hiding affects that one list: every other view still shows
+  the session, and the rail always says how many are hidden and can list them again.
+  It is the one field of a session record a person sets, so it lives on the runtime
+  record with the rest of that session's state and needs one to exist (`404` if the hook
+  has never seen the session, `400` without a `hidden` key; ids in a batch that have no
+  record are skipped rather than failing it).
 - Every session carries `spare` (bool). A spare is a background session Claude Code
   started ahead of the next job and nothing has prompted yet: not listed until its
   first prompt lands, unless you attached it to a card yourself. See

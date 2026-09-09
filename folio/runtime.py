@@ -2,10 +2,11 @@
 
 One small JSON file per session under <data>/runtime/sessions/. Only metadata
 is stored: session id, coarse state, timestamps, cwd, permission mode, pid, the
-path of Claude Code's own transcript, and the one field a person writes -- the
-`label` you can put on a session (see `set_label`). Never prompts, responses,
-tool arguments, transcript *contents* or code -- `transcript.py` reads the
-session's title out of that file at request time and hands it straight to the UI.
+path of Claude Code's own transcript, and the one field a person writes --
+`hidden`, set when you tuck a session out of the rail's Unattached list (see
+`set_hidden`). Never prompts, responses, tool arguments, transcript *contents*
+or code -- `transcript.py` reads the session's title out of that file at request
+time and hands it straight to the UI.
 
 This module is the Claude-specific boundary: `transition()` knows about Claude
 Code hook event names; everything else just consumes coarse states.
@@ -18,7 +19,7 @@ import re
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Callable, Iterable, Iterator
 
 try:
     import fcntl
@@ -45,12 +46,6 @@ _WORKING_EVENTS = {
     "PostCompact",
 }
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
-LABEL_MAX = 48  # a label is a note to yourself, not a description: it sits inside a rail row
-
-
-def clean_label(value: str | None) -> str:
-    """One short line, or "" for no label. Newlines and runs of space collapse."""
-    return re.sub(r"\s+", " ", str(value or "")).strip()[:LABEL_MAX]
 
 
 def utc_now() -> datetime:
@@ -354,35 +349,54 @@ class RuntimeStore:
         tmp.write_text(json.dumps(record, indent=1, sort_keys=True), encoding="utf-8")
         os.replace(tmp, self._path(session_id))
 
-    def set_label(self, session_id: str, label: str | None) -> dict | None:
-        """Put your own short label on a session, or clear it with "".
+    def _set_hidden(self, session_id: str, hidden: bool) -> bool:
+        """One record, caller holds the lock. False when there is no such record."""
+        record = self.get(session_id)
+        if record is None:
+            return False
+        if bool(record.get("hidden")) != hidden:  # already so: leave the file alone
+            if hidden:
+                record["hidden"] = True
+            else:
+                record.pop("hidden", None)
+            self._write(record)
+        return True
 
-        The one field here a person writes. It says you have accounted for a
-        session that is on no card -- "scratch", "answered a question", "someone
-        else's job" -- which is what takes it out of the rail's *Unattached*
-        inbox without inventing a card for it. Nothing else reads it: it is a
-        note to you, and a filter.
+    def set_hidden(self, session_id: str, hidden: bool = True) -> dict | None:
+        """Tuck a session out of the rail's Unattached list, or put it back.
 
-        It lives with the session's own record rather than in `items/` because it
-        is only ever about this session and should die with it: a pruned record
-        takes its label along, and by then there is no row left to declutter.
+        The one field here a person sets. *Unattached* is a list of sessions on no
+        card, and most sessions never get one -- a question answered, a one-off in
+        another repo -- so it silts up until each record ages out a week later.
+        Hiding one says "not this, ever": it leaves that list and nothing else, and
+        the rail always says how many are hidden and can list them again.
 
-        Returns the stored record, or None when there is no record to label (a
-        session the hook has never seen) or the id is not one we would write.
+        It lives with the session's own record rather than in `items/` because it is
+        only ever about this session and should die with it: a pruned record takes
+        its `hidden` along, and by then there is no row left to declutter.
+
+        Returns the stored record, or None when the hook has never seen the session
+        or the id is not one we would write.
         """
         if not _SAFE_ID.match(session_id or ""):
             return None
         with self.locked():
-            record = self.get(session_id)
-            if record is None:
-                return None
-            cleaned = clean_label(label)
-            if cleaned:
-                record["label"] = cleaned
-            else:
-                record.pop("label", None)
-            self._write(record)
-            return record
+            return self.get(session_id) if self._set_hidden(session_id, bool(hidden)) else None
+
+    def set_hidden_many(self, session_ids: Iterable[str], hidden: bool = True) -> list[str]:
+        """The same for a list of sessions, under one lock -- clearing a rail full of
+        old sessions is one gesture, and must not be one lock round-trip per row.
+
+        Returns the ids that exist and are now in the asked-for state; ids the hook
+        has never seen are skipped rather than failing the lot.
+        """
+        done = []
+        with self.locked():
+            for sid in session_ids:
+                sid = str(sid or "")
+                if _SAFE_ID.match(sid) and self._set_hidden(sid, bool(hidden)):
+                    done.append(sid)
+        return done
 
     def prune_ended(self, older_than: timedelta = timedelta(days=7), now: datetime | None = None) -> int:
         """Housekeeping: drop records of sessions that ended long ago."""

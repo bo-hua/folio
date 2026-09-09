@@ -83,24 +83,24 @@ assert.ok(!railVisible(s1), 'the row goes only when every card it is on is hidde
 assert.ok(railVisible(s3), 'an unattached row has no card to follow, so it always stays');
 HIDDEN.clear();
 
-// ---------------------------------------------------------------- the label, and Unattached
-// Unattached is an inbox. A session you have labelled ("scratch", "asked a question") is one
-// you have dealt with without giving it a card, so it leaves that list -- but is never lost:
-// the count comes back with the rows on request.
-const s4 = { id: 's4', short: 's4', title: '', autoTitle: 'a one-off', state: 'ended', items: [], label: 'scratch' };
+// ---------------------------------------------------------------- hiding, and Unattached
+// Unattached lists sessions on no card, and most never get one, so it silts up. Hiding a row
+// takes it out of that list and nothing else -- All still has it, and the count of what was
+// hidden puts them all back on screen.
+const s4 = { id: 's4', short: 's4', title: '', autoTitle: 'a one-off', state: 'ended', items: [], hidden: true };
 const ALL = [s1, s2, s3, s4];
-assert.deepEqual(ids(railRows(ALL, 'all', false).rows), ['s1', 's2', 's3', 's4'], 'All shows everything, labelled or not');
-assert.equal(railRows(ALL, 'all', false).labelled, 0, 'nothing is dropped outside Unattached, so nothing to offer back');
+assert.deepEqual(ids(railRows(ALL, 'all', false).rows), ['s1', 's2', 's3', 's4'], 'All shows everything, hidden or not');
+assert.equal(railRows(ALL, 'all', false).tucked, 0, 'nothing is dropped outside Unattached, so nothing to offer back');
 let r = railRows(ALL, 'unattached', false);
-assert.deepEqual(ids(r.rows), ['s3'], 'Unattached is what is on no card and not yet labelled');
-assert.equal(r.labelled, 1, 'and says how many the label took out');
+assert.deepEqual(ids(r.rows), ['s3'], 'Unattached is what is on no card and not hidden');
+assert.equal(r.tucked, 1, 'and says how many hiding took out');
 r = railRows(ALL, 'unattached', true);
-assert.deepEqual(ids(r.rows), ['s3', 's4'], 'asked for them, the labelled ones come back');
-assert.equal(r.labelled, 1);
-assert.deepEqual(ids(railRows(ALL, 'attention', false).rows), ['s1'], 'Needs you ignores labels entirely');
-const s5 = { ...s1, label: 'on a card anyway' };
-assert.deepEqual(ids(railRows([s5, s3], 'unattached', false).rows), ['s3'], 'a labelled session on a card was never in this list');
-assert.equal(railRows([s5, s3], 'unattached', false).labelled, 0, 'so it is not counted as one held back either');
+assert.deepEqual(ids(r.rows), ['s3', 's4'], 'asked for them, the hidden ones come back');
+assert.equal(r.tucked, 1);
+assert.deepEqual(ids(railRows(ALL, 'attention', false).rows), ['s1'], 'Needs you ignores hiding entirely');
+const s5 = { ...s1, hidden: true };
+assert.deepEqual(ids(railRows([s5, s3], 'unattached', false).rows), ['s3'], 'a hidden session on a card was never in this list');
+assert.equal(railRows([s5, s3], 'unattached', false).tucked, 0, 'so it is not counted as one held back either');
 
 // ---------------------------------------------------------------- what a drop does
 const over = (o = {}) => ({ rail: false, stage: false, chrome: false, ...o });

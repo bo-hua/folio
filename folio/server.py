@@ -163,7 +163,7 @@ class App:
             "title": sess.get("title") or "",
             "auto_title": "",
             "last_prompt": "",
-            "label": "",  # yours, and only on the runtime record: see RuntimeStore.set_label
+            "hidden": False,  # yours, and only on the runtime record: see RuntimeStore.set_hidden
             "state": UNKNOWN,
             "attention": None,
             "last_event": None,
@@ -185,7 +185,7 @@ class App:
             plan = resume_plan(sid, rec, state)
             view.update(
                 state=state,
-                label=rec.get("label") or "",
+                hidden=bool(rec.get("hidden")),
                 attention=rec.get("attention") if state == NEEDS_YOU else None,
                 last_event=rec.get("last_event"),
                 updated_at=rec.get("updated_at"),
@@ -553,26 +553,34 @@ class App:
             "areas": self.items.areas(),
         }
 
-    def label_session(self, sid: str, body: dict) -> dict:
-        """Label a session, or clear the label with "".
+    def hide_session(self, sid: str, body: dict) -> dict:
+        """Take one session out of the rail's *Unattached* list, or put it back.
 
-        A session on no card sits in the rail's *Unattached* list until something
-        happens to it, and plenty of sessions never deserve a card -- a question
-        answered, a one-off in another repo. A label is how you say so: it takes
-        the row out of that list without hiding it anywhere else, and says what
-        it was when you come back to it.
-
-        The label belongs to the session, not to any card, so it is stored on the
-        runtime record and needs one to exist (404 otherwise).
+        Most sessions never belong on a card -- a question answered, a one-off in
+        another repo -- so that list silts up until each record ages out. Hiding
+        is the whole gesture: no name, no card, nothing to maintain. It affects
+        that list and nothing else; every other view still shows the session.
         """
         if not _ID_RE.match(sid):
             raise ApiError(400, "bad session id")
-        if "label" not in body:
-            raise ApiError(400, 'label is required ("" clears it)')
-        rec = self.runtime.set_label(sid, body.get("label"))
+        if "hidden" not in body:
+            raise ApiError(400, "hidden is required (true or false)")
+        rec = self.runtime.set_hidden(sid, bool(body.get("hidden")))
         if rec is None:
             raise ApiError(404, "no runtime record for that session")
-        return {"session_id": sid, "label": rec.get("label") or ""}
+        return {"session_id": sid, "hidden": bool(rec.get("hidden"))}
+
+    def hide_sessions(self, body: dict) -> dict:
+        """The same for a list of sessions: clearing out a rail full of old ones is
+        one gesture, so it is one request rather than one per row (and one Undo)."""
+        ids = body.get("session_ids")
+        if not isinstance(ids, list) or not ids:
+            raise ApiError(400, "session_ids must be a non-empty list")
+        if len(ids) > 1000:
+            raise ApiError(400, "too many sessions in one request")
+        hidden = bool(body.get("hidden", True))
+        changed = self.runtime.set_hidden_many([str(i) for i in ids], hidden)
+        return {"hidden": hidden, "sessions": changed, "count": len(changed)}
 
     def resume(self, sid: str) -> dict:
         if not _ID_RE.match(sid):
@@ -599,7 +607,8 @@ class App:
         ("PATCH", r"^/api/items/([^/]+)/sessions/([^/]+)$", "update_session"),
         ("DELETE", r"^/api/items/([^/]+)/sessions/([^/]+)$", "detach_session"),
         ("GET", r"^/api/sessions$", "recent_sessions"),
-        ("PATCH", r"^/api/sessions/([^/]+)$", "label_session"),
+        ("POST", r"^/api/sessions/hide$", "hide_sessions"),
+        ("PATCH", r"^/api/sessions/([^/]+)$", "hide_session"),
         ("GET", r"^/api/sessions/([^/]+)/resume$", "resume"),
     )
 

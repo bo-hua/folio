@@ -132,11 +132,10 @@ def cmd_sessions(args) -> int:
         where = s["worktree"] or s["cwd"] or "-"
         branch = f"[{s['branch']}]" if s["branch"] else ""
         print(f"{(s['updated_at'] or '-')[:19]:20} {s['short_id']:9} {s['state']:9} {where} {branch}")
-        # your label for it, when there is one: the same mark that takes a session
-        # out of the rail's Unattached list
+        # hidden: you took it out of the rail's Unattached list. Still listed here.
         line = s["title"] or s["auto_title"]
-        if s.get("label"):
-            line = f"{line} · labelled “{s['label']}”" if line else f"labelled “{s['label']}”"
+        if s.get("hidden"):
+            line = f"{line} · hidden" if line else "hidden"
         if line:
             print(f"{'':20} {line}")
     standing_by = (data.get("spares") or {}).get("standing_by", 0)

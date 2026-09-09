@@ -17,7 +17,7 @@ working on. Each Item lists the sessions on it; the board joins them back up.
 | **Item** | one piece of work; the durable unit | one `.md` file with YAML frontmatter |
 | **Child item** | a sub-problem or spin-off | an Item whose frontmatter has `parent: <id>` |
 | **Session** | a Claude Code session attached to an Item (the same session can be on several) | an id + title in each Item's frontmatter |
-| **Session label** | one line saying you have dealt with a session no card owns — it then leaves the rail's *Unattached* list | a `label` on that session's runtime record, so it dies with the session |
+| **Hidden session** | one you will never file, taken out of the rail's *Unattached* list (and nothing else) | a `hidden` flag on that session's runtime record, so it dies with the session |
 | **Status** | *derived* idea / active, or the two states a person sets: done / parked (+ optional `park_note`) | frontmatter `status:` |
 | **Runtime state** | *machine* state: working / needs you / ready / ended / inactive | derived from the hook, never written to Markdown |
 
@@ -43,8 +43,8 @@ All of it sits outside this repo, under `~/.cc-workspace` by default
     Inbox/
       some-raw-idea.md
   runtime/
-    sessions/<session-id>.json   ephemeral Claude state written by the hook, plus any
-                                 label you put on that session (safe to delete)
+    sessions/<session-id>.json   ephemeral Claude state written by the hook, plus
+                                 whether you hid that session (safe to delete)
     hook-errors.log              only present if the hook ever hit an exception
 ```
 
