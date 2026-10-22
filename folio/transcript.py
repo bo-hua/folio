@@ -15,9 +15,8 @@ about?":
 rename; `ai-title` is Claude Code's own guess. The title is the first of those
 present, so folio shows the same name the agent view does.
 
-folio reads those fields, plus the ids that mark a background task's launch and
-end (see `background_tasks`), and nothing else -- no messages, no responses, no
-tool arguments or output, no code. Like worktrees and session state, this is *derived on every
+folio reads those fields and nothing else -- no messages, no responses, no
+tool calls, no code. Like worktrees and session state, this is *derived on every
 request and never written into folio's data directory*: the runtime record
 stores only the transcript's path, and even that is optional (we can find the
 file by session id).
@@ -36,7 +35,6 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import datetime
 from pathlib import Path
 
 TAIL_BYTES = 256 * 1024
@@ -167,103 +165,3 @@ def describe(session_id: str, hint: str | None = None, projects_dir: Path | None
         _CACHE.clear()
     _CACHE[key] = (st.st_mtime, st.st_size, meta)
     return meta
-
-
-# --------------------------------------------------------------- background tasks
-#
-# A turn can end while work it started keeps running: `Bash` with
-# `run_in_background`, which Claude Code shows as "N shells still running" under
-# the finished turn. No hook fires when such a task exits, but the transcript
-# records both ends, by task id:
-#
-#   launch  {"type": "user", "toolUseResult": {..., "backgroundTaskId": "bvpwgrn36"}, "timestamp": ...}
-#   exit    {"type": "queue-operation", "content": "<task-notification>\n<task-id>bvpwgrn36</task-id>..."}
-#   killed  {"type": "assistant", ... {"type": "tool_use", "name": "TaskStop", "input": {"task_id": "bvpwgrn36"}}}
-#
-# Again only those markers are read -- task ids and launch times, never the
-# command or its output. Background *subagents* are not counted here: their own
-# hook events already say they are busy (see `runtime.subagent_busy`).
-
-_NOTIFIED = re.compile(r"<task-id>([A-Za-z0-9._-]{1,128})</task-id>")
-_STOPPERS = ("TaskStop", "KillShell")
-
-# path -> (inode, offset scanned to, {task id: launch time})
-_TASKS: dict[str, tuple[int, int, dict[str, datetime | None]]] = {}
-
-
-def _when(value) -> datetime | None:
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
-def _scan_tasks(line: str, running: dict[str, datetime | None]) -> None:
-    if "<task-notification>" in line:
-        for task_id in _NOTIFIED.findall(line):
-            running.pop(task_id, None)
-        return
-    if "backgroundTaskId" not in line and not any(s in line for s in _STOPPERS):
-        return
-    try:
-        obj = json.loads(line)
-    except ValueError:
-        return
-    if not isinstance(obj, dict) or obj.get("isSidechain"):
-        return
-    result = obj.get("toolUseResult")
-    if isinstance(result, dict) and isinstance(result.get("backgroundTaskId"), str):
-        running[result["backgroundTaskId"]] = _when(obj.get("timestamp"))
-    message = obj.get("message")
-    content = message.get("content") if isinstance(message, dict) else None
-    for block in content if isinstance(content, list) else ():
-        if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") in _STOPPERS:
-            args = block.get("input") if isinstance(block.get("input"), dict) else {}
-            for key in ("task_id", "shell_id"):
-                running.pop(str(args.get(key)), None)
-
-
-def running_tasks(path: Path) -> dict[str, datetime | None]:
-    """{task id: launch time} for background tasks launched and not over yet.
-
-    Transcripts only grow, so each byte is read once: we remember how far we got
-    and pick up from there. A file that shrank or was replaced is read again.
-    """
-    try:
-        st = path.stat()
-    except OSError:
-        return {}
-    key = str(path)
-    inode, offset, running = _TASKS.get(key, (st.st_ino, 0, {}))
-    if inode != st.st_ino or st.st_size < offset:
-        offset, running = 0, {}
-    if st.st_size > offset:
-        running = dict(running)
-        start = max(offset, st.st_size - MAX_SCAN_BYTES)
-        try:
-            with path.open("rb") as fh:
-                fh.seek(start)
-                data = fh.read(st.st_size - start)
-        except OSError:
-            return {}
-        end = data.rfind(b"\n") + 1  # a line still being written waits for the next look
-        for raw in data[:end].decode("utf-8", "replace").splitlines():
-            _scan_tasks(raw, running)
-        if len(_TASKS) >= _CACHE_MAX:
-            _TASKS.clear()
-        _TASKS[key] = (st.st_ino, start + end, running)
-    return running
-
-
-def background_tasks(session_id: str, hint: str | None = None, since: datetime | None = None,
-                     projects_dir: Path | None = None) -> int:
-    """How many background tasks this session has running, launched at or after `since`.
-
-    `since` is when the session's current process started. A task outlives its
-    turn but not its process, so one launched before a resume whose exit was never
-    written down is not running now.
-    """
-    path = find_transcript(session_id, hint, projects_dir)
-    if path is None:
-        return 0
-    return sum(1 for at in running_tasks(path).values() if since is None or at is None or at >= since)

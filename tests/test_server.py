@@ -362,39 +362,29 @@ def test_a_session_you_renamed_in_claude_code_shows_that_name(server, tmp_path, 
     assert sess["auto_title"] == "show my rename"
 
 
-def test_a_finished_turn_with_shells_still_running_is_working_not_needs_you(server, tmp_path, monkeypatch):
-    """"done 7:01 AM · 2 shells still running": the turn is over but the job is not.
-    Nothing is waiting on you until the shells end and the session reports back."""
-    from folio import transcript
+def test_a_background_job_still_working_after_its_turn_is_not_waiting_on_you(server, tmp_path, monkeypatch):
+    """"done 7:01 AM · 2 shells still running": the turn ended, the job did not. Claude
+    Code's own job state tells that apart from a job that is done but left a preview
+    server or a watcher running -- the shells alone cannot."""
+    from folio import jobs
 
     call, cfg, repo = server["call"], server["config"], server["repo"]
     sid = "2d3e4f50-6172-4839-8a0b-2d3e4f5a6b7c"
-    proj = tmp_path / "claude" / "projects" / "-some-checkout"
-    proj.mkdir(parents=True)
-    path = proj / f"{sid}.jsonl"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
-    for cache in (transcript._CACHE, transcript._PATHS, transcript._TASKS):
-        cache.clear()
+    jobs._CACHE.clear()
+    job_dir = tmp_path / "claude" / "jobs" / sid[:8]
+    job_dir.mkdir(parents=True)
 
-    def launched(task_id, at):
-        return json.dumps({"type": "user", "timestamp": at, "sessionId": sid,
-                           "toolUseResult": {"stdout": "", "backgroundTaskId": task_id}}) + "\n"
-
-    def notified(task_id):
-        return json.dumps({"type": "queue-operation", "operation": "enqueue", "sessionId": sid,
-                           "content": f"<task-notification>\n<task-id>{task_id}</task-id>\n"
-                                      "<status>completed</status>\n</task-notification>"}) + "\n"
+    def job(state, detail):
+        (job_dir / "state.json").write_text(json.dumps(
+            {"state": state, "detail": detail, "sessionId": sid, "resumeSessionId": sid}), encoding="utf-8")
 
     store = RuntimeStore(cfg.runtime_dir)
-    t0 = datetime.now(timezone.utc) - timedelta(minutes=5)
-    store.record_event({"session_id": sid, "hook_event_name": "SessionStart", "cwd": str(repo["repo"])}, now=t0)
-    path.write_text(
-        launched("stale1", (t0 - timedelta(hours=1)).isoformat())  # from a process before this one
-        + launched("bvpwgrn36", (t0 + timedelta(minutes=1)).isoformat())
-        + launched("bv80z3rnz", (t0 + timedelta(minutes=1)).isoformat()),
-        encoding="utf-8")
+    now = datetime.now(timezone.utc) - timedelta(minutes=5)
+    store.record_event({"session_id": sid, "hook_event_name": "SessionStart", "cwd": str(repo["repo"])}, now=now,
+                       process_finder=lambda: (None, True))
     store.record_event({"session_id": sid, "hook_event_name": "Stop", "cwd": str(repo["repo"])},
-                       now=t0 + timedelta(minutes=2))
+                       now=now + timedelta(minutes=1))
 
     assert call("POST", "/api/areas", {"name": "Digest"})[0] == 200
     item = call("POST", "/api/items", {"name": "Send policy", "area": "Digest"})[1]
@@ -406,15 +396,17 @@ def test_a_finished_turn_with_shells_still_running_is_working_not_needs_you(serv
         card = next(i for i in ov["items"] if i["id"] == item["id"])
         return sess["state"], sess["attention"], card["attention"]["level"]
 
+    job("working", "five-day refresh running in the background; next: review the tables")
     assert look() == ("working", None, "working")
 
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(notified("bvpwgrn36"))
-    assert look() == ("working", None, "working")  # one shell still going
+    # the chain finished and the agent reported -- a monitoring shell is still up, and that is fine
+    job("done", "Tables A, B and C refreshed")
+    assert look() == ("needs_you", "review", "needs_you")
 
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(notified("bv80z3rnz"))
-    assert look() == ("needs_you", "review", "needs_you")  # all done: now the result is yours to read
+    # an interactive session has no job, and keeps the plain hook state
+    jobs._CACHE.clear()
+    (job_dir / "state.json").unlink()
+    assert look() == ("needs_you", "review", "needs_you")
 
 
 def test_note_editor_is_served_and_wired_into_the_page(server):

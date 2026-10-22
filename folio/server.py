@@ -25,11 +25,11 @@ from .brief import render_brief
 from .config import Config
 from .gitinfo import Worktree, match_cwd, repo_snapshot
 from .items import HUMAN_STATUSES, STATUSES, Item, ItemStore
+from .jobs import job_state
 from .runtime import (
-    NEEDS_YOU, READY, SNOOZE_MAX, SNOOZED, UNKNOWN, RuntimeStore, aggregate_attention, effective_state, is_live,
-    is_snoozed, is_spare, iso, parse_iso, utc_now,
+    NEEDS_YOU, SNOOZE_MAX, SNOOZED, UNKNOWN, RuntimeStore, aggregate_attention, effective_state, is_finished,
+    is_live, is_snoozed, is_spare, iso, utc_now,
 )
-from .transcript import background_tasks
 from .transcript import describe as describe_session
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -102,20 +102,20 @@ def resume_plan(session_id: str, record: dict | None, state: str) -> dict:
 
 
 def session_state(rec: dict, now: datetime | None = None) -> str:
-    """`effective_state`, plus what only the transcript knows: shells left running.
+    """`effective_state`, plus what only Claude Code's job list knows.
 
-    A finished turn whose background shells are still going is working, not
-    waiting on you. The transcript is only read for a session that looks finished.
+    A background job whose turn ended while its work did not ("2 shells still
+    running", and the agent said it will report back) is working, not waiting on
+    you. Only a session that looks finished is looked up.
     """
     state = effective_state(rec, now)
-    if state == READY or (state == NEEDS_YOU and rec.get("attention") == "review"):
+    if is_finished(state, rec) and rec.get("background") is not False:
         try:
-            running = background_tasks(rec.get("session_id") or "", rec.get("transcript_path"),
-                                       since=parse_iso(rec.get("process_started_at")))
+            job = job_state(rec.get("session_id") or "")
         except Exception:  # noqa: BLE001 -- Claude Code owns this file format; never break the page over it
-            running = 0
-        if running:
-            state = effective_state(rec, now, background_tasks=running)
+            job = None
+        if job:
+            state = effective_state(rec, now, job=job)
     return state
 
 
