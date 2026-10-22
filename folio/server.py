@@ -25,9 +25,10 @@ from .brief import render_brief
 from .config import Config
 from .gitinfo import Worktree, match_cwd, repo_snapshot
 from .items import HUMAN_STATUSES, STATUSES, Item, ItemStore
+from .jobs import job_state
 from .runtime import (
-    NEEDS_YOU, SNOOZE_MAX, SNOOZED, UNKNOWN, RuntimeStore, aggregate_attention, effective_state, is_live,
-    is_snoozed, is_spare, iso, utc_now,
+    NEEDS_YOU, SNOOZE_MAX, SNOOZED, UNKNOWN, RuntimeStore, aggregate_attention, effective_state, is_finished,
+    is_live, is_snoozed, is_spare, iso, utc_now,
 )
 from .transcript import describe as describe_session
 
@@ -98,6 +99,24 @@ def resume_plan(session_id: str, record: dict | None, state: str) -> dict:
             "alternatives": [fork],
         }
     return {"kind": "resume", "command": resume, "note": None, "alternatives": [fork]}
+
+
+def session_state(rec: dict, now: datetime | None = None) -> str:
+    """`effective_state`, plus what only Claude Code's job list knows.
+
+    A background job whose turn ended while its work did not ("2 shells still
+    running", and the agent said it will report back) is working, not waiting on
+    you. Only a session that looks finished is looked up.
+    """
+    state = effective_state(rec, now)
+    if is_finished(state, rec) and rec.get("background") is not False:
+        try:
+            job = job_state(rec.get("session_id") or "")
+        except Exception:  # noqa: BLE001 -- Claude Code owns this file format; never break the page over it
+            job = None
+        if job:
+            state = effective_state(rec, now, job=job)
+    return state
 
 
 def attn_state(view: dict) -> str:
@@ -189,7 +208,7 @@ class App:
         }
         rec = snap.runtime.get(sid)
         if rec:
-            state = effective_state(rec, snap.now)
+            state = session_state(rec, snap.now)
             plan = resume_plan(sid, rec, state)
             # A snooze only ever silences a live *needs you*. It stays on the record while the
             # state is something else -- a subagent still working under a finished turn is the
@@ -630,7 +649,7 @@ class App:
         if not _ID_RE.match(sid):
             raise ApiError(400, "bad session id")
         rec = self.runtime.get(sid)
-        state = effective_state(rec) if rec else UNKNOWN
+        state = session_state(rec) if rec else UNKNOWN
         plan = resume_plan(sid, rec, state)
         return {"session_id": sid, "cwd": rec.get("cwd") if rec else None, "state": state, **plan}
 

@@ -362,6 +362,53 @@ def test_a_session_you_renamed_in_claude_code_shows_that_name(server, tmp_path, 
     assert sess["auto_title"] == "show my rename"
 
 
+def test_a_background_job_still_working_after_its_turn_is_not_waiting_on_you(server, tmp_path, monkeypatch):
+    """"done 7:01 AM · 2 shells still running": the turn ended, the job did not. Claude
+    Code's own job state tells that apart from a job that is done but left a preview
+    server or a watcher running -- the shells alone cannot."""
+    from folio import jobs
+
+    call, cfg, repo = server["call"], server["config"], server["repo"]
+    sid = "2d3e4f50-6172-4839-8a0b-2d3e4f5a6b7c"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    jobs._CACHE.clear()
+    job_dir = tmp_path / "claude" / "jobs" / sid[:8]
+    job_dir.mkdir(parents=True)
+
+    def job(state, detail):
+        (job_dir / "state.json").write_text(json.dumps(
+            {"state": state, "detail": detail, "sessionId": sid, "resumeSessionId": sid}), encoding="utf-8")
+
+    store = RuntimeStore(cfg.runtime_dir)
+    now = datetime.now(timezone.utc) - timedelta(minutes=5)
+    store.record_event({"session_id": sid, "hook_event_name": "SessionStart", "cwd": str(repo["repo"])}, now=now,
+                       process_finder=lambda: (None, True))
+    store.record_event({"session_id": sid, "hook_event_name": "Stop", "cwd": str(repo["repo"])},
+                       now=now + timedelta(minutes=1))
+
+    assert call("POST", "/api/areas", {"name": "Digest"})[0] == 200
+    item = call("POST", "/api/items", {"name": "Send policy", "area": "Digest"})[1]
+    assert call("POST", f"/api/items/{item['id']}/sessions", {"session_id": sid})[0] == 200
+
+    def look():
+        ov = call("GET", "/api/overview")[1]
+        sess = next(s for s in ov["sessions"] if s["id"] == sid)
+        card = next(i for i in ov["items"] if i["id"] == item["id"])
+        return sess["state"], sess["attention"], card["attention"]["level"]
+
+    job("working", "five-day refresh running in the background; next: review the tables")
+    assert look() == ("working", None, "working")
+
+    # the chain finished and the agent reported -- a monitoring shell is still up, and that is fine
+    job("done", "Tables A, B and C refreshed")
+    assert look() == ("needs_you", "review", "needs_you")
+
+    # an interactive session has no job, and keeps the plain hook state
+    jobs._CACHE.clear()
+    (job_dir / "state.json").unlink()
+    assert look() == ("needs_you", "review", "needs_you")
+
+
 def test_note_editor_is_served_and_wired_into_the_page(server):
     """Notes are edited as formatted text and stored as Markdown: the editor is a
     real asset the shell loads, and the notes section is built from it rather than

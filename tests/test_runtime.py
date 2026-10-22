@@ -223,6 +223,24 @@ def test_background_subagent_keeps_the_session_working_after_the_main_agent_stop
     assert effective_state(dead, t0 + timedelta(seconds=30), alive=lambda pid: False) == INACTIVE
 
 
+def test_a_job_claude_code_still_calls_working_is_working_after_its_turn_ends():
+    """The screenshot: "done 7:01 AM · 2 shells still running", and the agent said the
+    refresh runs on in the background. Claude Code's job state says working; so do we."""
+    t0 = datetime(2026, 10, 22, 7, 1, tzinfo=timezone.utc)
+    review = {"state": NEEDS_YOU, "attention": "review", "updated_at": iso_at(t0, 0), "main_event_at": iso_at(t0, 0)}
+    later = t0 + timedelta(minutes=30)
+    assert effective_state(review, later, job="working") == WORKING
+    assert effective_state({**review, "state": READY, "attention": None}, later, job="working") == WORKING
+    # done -- with a preview server or a watcher still up, it does not matter -- is yours to read
+    for job in ("done", "blocked", None):
+        assert effective_state(review, later, job=job) == NEEDS_YOU
+    # it never hides something blocking you, nor revives a dead or ended session
+    for reason in ("permission", "question"):
+        assert effective_state({**review, "attention": reason}, later, job="working") == NEEDS_YOU
+    assert effective_state({**review, "pid": 4242}, later, alive=lambda pid: False, job="working") == INACTIVE
+    assert effective_state({"state": ENDED, "updated_at": iso_at(t0, 0)}, later, job="working") == ENDED
+
+
 def test_record_event_tracks_which_side_of_the_session_spoke(tmp_path):
     store = RuntimeStore(tmp_path / "runtime")
     t0 = datetime(2026, 8, 31, 5, 50, tzinfo=timezone.utc)

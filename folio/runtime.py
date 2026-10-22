@@ -218,8 +218,19 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
-def effective_state(record: dict, now: datetime | None = None, alive: Callable[[int], bool] = pid_alive) -> str:
-    """Stored state, downgraded to INACTIVE when the process is gone or stale."""
+def is_finished(state: str, record: dict) -> bool:
+    """A turn that ended with nothing blocking: ready, or needs you · review."""
+    return state == READY or (state == NEEDS_YOU and record.get("attention") == "review")
+
+
+def effective_state(
+    record: dict, now: datetime | None = None, alive: Callable[[int], bool] = pid_alive, job: str | None = None,
+) -> str:
+    """Stored state, downgraded to INACTIVE when the process is gone or stale.
+
+    `job` is Claude Code's own state for the background job this session runs
+    (`jobs.job_state`), when it has one.
+    """
     now = now or utc_now()
     state = record.get("state") or UNKNOWN
     if state == UNKNOWN and record.get("last_event"):
@@ -235,12 +246,14 @@ def effective_state(record: dict, now: datetime | None = None, alive: Callable[[
     updated = parse_iso(record.get("updated_at"))
     if updated is None or now - updated > STALE_AFTER:
         return INACTIVE
-    finished = state == READY or (state == NEEDS_YOU and record.get("attention") == "review")
-    if finished and subagent_busy(record):
-        # The main agent finished its turn but handed work to a subagent that is
-        # still running -- what you see in the terminal is work, not a prompt, and
-        # not a result to read yet either. A permission prompt or a question is
-        # never overridden this way: those block until you answer.
+    if is_finished(state, record) and (subagent_busy(record) or job == "working"):
+        # The main agent finished its turn but the job did not: it handed work to a
+        # subagent that is still running, or -- Claude Code's own reading of what the
+        # agent said -- it left work running in the background and will report when
+        # it settles. Either way it is work, not a prompt, and not a result to read
+        # yet. (Shells still running are no evidence on their own: a preview server
+        # or a watcher outlives a job that is done.) A permission prompt or a
+        # question is never overridden this way: those block until you answer.
         return WORKING
     return state
 
