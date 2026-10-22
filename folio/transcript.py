@@ -2,20 +2,27 @@
 
 Claude Code writes one JSONL transcript per session under
 ``<claude-config>/projects/<slug>/<session-id>.jsonl``. Interleaved with the
-conversation it records small state lines, two of which answer "what is this
-session about?" without anyone having to type a title:
+conversation it records small state lines that answer "what is this session
+about?":
 
+    {"customTitle": "Folder path",           "sessionId": ..., "type": "custom-title"}
+    {"agentName": "hide done cascade logic", "sessionId": ..., "type": "agent-name"}
     {"aiTitle": "delete area data cleanup",  "sessionId": ..., "type": "ai-title"}
     {"lastPrompt": "merge",                  "sessionId": ..., "type": "last-prompt"}
 
-folio reads those two fields and nothing else -- no messages, no responses, no
+`custom-title` is a name you gave the session yourself by renaming it;
+`agent-name` is the label Claude Code's agent view shows, which follows a
+rename; `ai-title` is Claude Code's own guess. The title is the first of those
+present, so folio shows the same name the agent view does.
+
+folio reads those fields and nothing else -- no messages, no responses, no
 tool calls, no code. Like worktrees and session state, this is *derived on every
 request and never written into folio's data directory*: the runtime record
 stores only the transcript's path, and even that is optional (we can find the
 file by session id).
 
 Transcripts reach tens of megabytes, so we read a tail window and scan it
-backwards for the newest of each line, then cache per (path, mtime, size). Both
+backwards for the newest of each line, then cache per (path, mtime, size). These
 lines are rewritten every turn, so the tail almost always has them; the
 whole-file fallback covers sessions that stopped early.
 
@@ -37,12 +44,16 @@ PROMPT_MAX = 240
 _CACHE_MAX = 512
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
-# (json "type" value, field holding the text, key we expose)
+# (json "type" value, field holding the text, internal key)
 _WANTED = (
-    ("ai-title", "aiTitle", "title"),
+    ("custom-title", "customTitle", "custom_title"),
+    ("agent-name", "agentName", "agent_name"),
+    ("ai-title", "aiTitle", "ai_title"),
     ("last-prompt", "lastPrompt", "last_prompt"),
 )
-_LIMITS = {"title": TITLE_MAX, "last_prompt": PROMPT_MAX}
+# The exposed title is the first of these present: your rename beats the guess.
+_TITLE_KEYS = ("custom_title", "agent_name", "ai_title")
+_LIMITS = {"custom_title": TITLE_MAX, "agent_name": TITLE_MAX, "ai_title": TITLE_MAX, "last_prompt": PROMPT_MAX}
 
 # path -> (mtime, size, meta)
 _CACHE: dict[str, tuple[float, int, dict]] = {}
@@ -108,16 +119,31 @@ def _tail_lines(path: Path, size: int, window: int) -> list[str]:
     return data.decode("utf-8", "replace").splitlines()
 
 
+def _incomplete(raw: dict) -> bool:
+    """Worth a whole-file scan: no title of any kind yet, or no prompt.
+
+    Not "any key missing" -- most sessions are never renamed, and hunting for a
+    custom-title that does not exist would whole-file-scan every transcript.
+    """
+    return "last_prompt" not in raw or not any(k in raw for k in _TITLE_KEYS)
+
+
 def read_meta(path: Path, size: int | None = None) -> dict:
     """{'title': ..., 'last_prompt': ...} -- either key may be absent."""
     try:
         size = path.stat().st_size if size is None else size
-        meta = _harvest(list(reversed(_tail_lines(path, size, TAIL_BYTES))), {})
-        if len(meta) < len(_WANTED) and TAIL_BYTES < size <= MAX_SCAN_BYTES:
+        raw = _harvest(list(reversed(_tail_lines(path, size, TAIL_BYTES))), {})
+        if _incomplete(raw) and TAIL_BYTES < size <= MAX_SCAN_BYTES:
             with path.open("r", encoding="utf-8", errors="replace") as fh:
-                meta = _harvest(list(reversed(fh.readlines())), meta)
+                raw = _harvest(list(reversed(fh.readlines())), raw)
     except OSError:
         return {}
+    meta = {}
+    title = next((raw[k] for k in _TITLE_KEYS if k in raw), None)
+    if title:
+        meta["title"] = title
+    if "last_prompt" in raw:
+        meta["last_prompt"] = raw["last_prompt"]
     return meta
 
 

@@ -60,6 +60,60 @@ def test_newest_of_each_line_wins(tmp_path):
     assert meta == {"title": "what it became", "last_prompt": "now do this instead"}
 
 
+def custom_line(text, sid=SID):
+    return line(type="custom-title", customTitle=text, sessionId=sid)
+
+
+def agent_line(text, sid=SID):
+    return line(type="agent-name", agentName=text, sessionId=sid)
+
+
+def test_a_name_you_gave_the_session_beats_claudes_guess(tmp_path):
+    """Renaming a session writes custom-title; Claude Code keeps writing its own
+    ai-title after it, but the agent view shows your name and so must folio."""
+    body = (
+        title_line("session title mismatch investigation") + custom_line("show my rename")
+        + agent_line("show my rename") + chatter(2)
+        + title_line("session title mismatch investigation") + prompt_line("merge")
+    )
+    write_transcript(tmp_path, body)
+    meta = transcript.describe(SID, projects_dir=tmp_path / "projects")
+    assert meta == {"title": "show my rename", "last_prompt": "merge"}
+
+
+def test_agent_name_beats_ai_title(tmp_path):
+    """The agent view's own label, when there is no custom-title line."""
+    write_transcript(tmp_path, title_line("claude's guess") + agent_line("what the agent view shows"))
+    assert transcript.describe(SID, projects_dir=tmp_path / "projects")["title"] == "what the agent view shows"
+
+
+def test_newest_rename_wins(tmp_path):
+    write_transcript(tmp_path, custom_line("first name") + chatter(2) + custom_line("second name"))
+    assert transcript.describe(SID, projects_dir=tmp_path / "projects")["title"] == "second name"
+
+
+def test_rename_before_the_tail_is_found_when_the_tail_has_no_title(tmp_path, monkeypatch):
+    monkeypatch.setattr(transcript, "TAIL_BYTES", 512)
+    write_transcript(tmp_path, custom_line("renamed early") + chatter(400) + prompt_line("late"))
+    meta = transcript.describe(SID, projects_dir=tmp_path / "projects")
+    assert meta == {"title": "renamed early", "last_prompt": "late"}
+
+
+def test_unrenamed_session_is_not_whole_file_scanned(tmp_path, monkeypatch):
+    """Most sessions never get a custom-title; looking for one must not cost a
+    full read of a huge transcript when the tail already has a title."""
+    monkeypatch.setattr(transcript, "TAIL_BYTES", 512)
+    write_transcript(tmp_path, chatter(400) + title_line("guess") + prompt_line("p"))
+    real_open = transcript.Path.open
+
+    def no_text_open(self, mode="r", *a, **kw):
+        assert "b" in mode, "whole-file scan happened"
+        return real_open(self, mode, *a, **kw)
+
+    monkeypatch.setattr(transcript.Path, "open", no_text_open)
+    assert transcript.describe(SID, projects_dir=tmp_path / "projects") == {"title": "guess", "last_prompt": "p"}
+
+
 def test_found_by_session_id_without_a_hint(tmp_path):
     """Sessions recorded before folio stored transcript_path still get a title."""
     write_transcript(tmp_path, title_line("found by glob"), slug="-Users-u-somewhere-else")
