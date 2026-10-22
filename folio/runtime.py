@@ -218,8 +218,14 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
-def effective_state(record: dict, now: datetime | None = None, alive: Callable[[int], bool] = pid_alive) -> str:
-    """Stored state, downgraded to INACTIVE when the process is gone or stale."""
+def effective_state(
+    record: dict, now: datetime | None = None, alive: Callable[[int], bool] = pid_alive, background_tasks: int = 0,
+) -> str:
+    """Stored state, downgraded to INACTIVE when the process is gone or stale.
+
+    `background_tasks` is how many tasks the session left running in the
+    background (`transcript.background_tasks`): the hook never hears when those end.
+    """
     now = now or utc_now()
     state = record.get("state") or UNKNOWN
     if state == UNKNOWN and record.get("last_event"):
@@ -236,11 +242,13 @@ def effective_state(record: dict, now: datetime | None = None, alive: Callable[[
     if updated is None or now - updated > STALE_AFTER:
         return INACTIVE
     finished = state == READY or (state == NEEDS_YOU and record.get("attention") == "review")
-    if finished and subagent_busy(record):
-        # The main agent finished its turn but handed work to a subagent that is
-        # still running -- what you see in the terminal is work, not a prompt, and
-        # not a result to read yet either. A permission prompt or a question is
-        # never overridden this way: those block until you answer.
+    if finished and (subagent_busy(record) or background_tasks > 0):
+        # The main agent finished its turn but handed work to a subagent, or to a
+        # shell in the background ("2 shells still running"), that is still going --
+        # what you see in the terminal is work, not a prompt, and not a result to
+        # read yet either: when it ends, the session wakes and the turn that reports
+        # it is what needs you. A permission prompt or a question is never
+        # overridden this way: those block until you answer.
         return WORKING
     return state
 
@@ -369,6 +377,9 @@ class RuntimeStore:
             record["permission_mode"] = str(event["permission_mode"])
         if record["state"] == ENDED:
             record["ended_at"] = iso(now)
+        if event.get("hook_event_name") == "SessionStart" and not event.get("agent_id"):
+            # A new process (fresh or resumed): background tasks from an earlier one are gone.
+            record["process_started_at"] = iso_precise(now)
         needs_pid = process_finder is not None and (
             record.get("pid") is None
             or record.get("background") is None  # records written before `background` existed

@@ -202,3 +202,79 @@ def test_claude_projects_dir_follows_the_env(tmp_path, monkeypatch):
     assert transcript.claude_projects_dir() == tmp_path / "cfg" / "projects"
     monkeypatch.delenv("CLAUDE_CONFIG_DIR")
     assert transcript.claude_projects_dir().name == "projects"
+
+
+# --------------------------------------------------------------- background tasks
+# Shapes copied from a real Claude Code 2.1.26x transcript.
+
+def launched(task_id, at="2026-10-22T06:57:00.100Z", sidechain=False):
+    return line(type="user", isSidechain=sidechain, timestamp=at, sessionId=SID,
+                message={"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_x", "content": ""}]},
+                toolUseResult={"stdout": "", "stderr": "", "interrupted": False, "backgroundTaskId": task_id})
+
+
+def notified(task_id, status="completed"):
+    return line(type="queue-operation", operation="enqueue", timestamp="2026-10-22T06:59:15.220Z", sessionId=SID,
+                content=f"<task-notification>\n<task-id>{task_id}</task-id>\n<tool-use-id>toolu_x</tool-use-id>\n"
+                        f"<status>{status}</status>\n</task-notification>")
+
+
+def stopped(task_id, tool="TaskStop"):
+    key = "shell_id" if tool == "KillShell" else "task_id"
+    return line(type="assistant", sessionId=SID, message={"content": [
+        {"type": "tool_use", "id": "toolu_y", "name": tool, "input": {key: task_id}}]})
+
+
+@pytest.fixture
+def projects(tmp_path):
+    transcript._TASKS.clear()
+    yield tmp_path
+    transcript._TASKS.clear()
+
+
+def tasks(root, since=None, sid=SID):
+    return transcript.background_tasks(sid, since=since, projects_dir=root / "projects")
+
+
+def test_a_shell_left_running_is_counted_until_its_notification(projects):
+    path = write_transcript(projects, title_line("refresh") + launched("bvpwgrn36") + launched("bv80z3rnz") + chatter(2))
+    assert tasks(projects) == 2  # "2 shells still running"
+    with path.open("a") as fh:
+        fh.write(notified("bvpwgrn36", "failed"))
+    assert tasks(projects) == 1
+    with path.open("a") as fh:
+        fh.write(notified("bv80z3rnz"))
+    assert tasks(projects) == 0
+
+
+def test_a_stopped_shell_is_not_running(projects):
+    write_transcript(projects, launched("a1") + launched("b2") + launched("c3") + stopped("a1") + stopped("b2", "KillShell"))
+    assert tasks(projects) == 1
+
+
+def test_only_complete_lines_are_read_and_each_once(projects):
+    path = write_transcript(projects, launched("a1"))
+    with path.open("a") as fh:
+        fh.write(notified("a1")[:40])  # Claude Code is mid-write
+    assert tasks(projects) == 1
+    with path.open("a") as fh:
+        fh.write(notified("a1")[40:])
+    assert tasks(projects) == 0
+    # a rewritten (shorter) file is read again from the top
+    write_transcript(projects, launched("z9"))
+    assert tasks(projects) == 1
+
+
+def test_tasks_from_before_the_process_started_are_gone(projects):
+    from datetime import datetime, timezone
+    write_transcript(projects, launched("old", at="2026-10-22T06:00:00.000Z") + launched("new", at="2026-10-22T07:00:00.500Z"))
+    assert tasks(projects, since=datetime(2026, 10, 22, 7, 0, 0, tzinfo=timezone.utc)) == 1
+    # compared as times, not text: as strings "07:00:00.500Z" would sort before "07:00:00Z"
+    assert tasks(projects, since=datetime(2026, 10, 22, 7, 0, 0, 400000, tzinfo=timezone.utc)) == 1
+    assert tasks(projects, since=datetime(2026, 10, 22, 7, 0, 1, tzinfo=timezone.utc)) == 0
+
+
+def test_a_subagents_shells_and_unknown_sessions_count_nothing(projects):
+    write_transcript(projects, launched("sub", sidechain=True))
+    assert tasks(projects) == 0
+    assert tasks(projects, sid="no-such-session") == 0

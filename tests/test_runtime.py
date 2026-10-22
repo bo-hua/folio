@@ -79,7 +79,8 @@ def test_record_event_sequence_and_metadata_only(tmp_path):
     # title back out of it live. Nothing from inside the transcript is ever written here.
     assert json.loads(raw)["transcript_path"] == "/home/u/.claude/projects/x/y.jsonl"
     allowed = {"session_id", "state", "attention", "first_seen", "cwd", "transcript_path", "permission_mode", "pid",
-               "background", "last_event", "updated_at", "ended_at", "main_event_at", "agent_event_at"}
+               "background", "last_event", "updated_at", "ended_at", "main_event_at", "agent_event_at",
+               "process_started_at"}
     assert set(json.loads(raw)) <= allowed
 
 

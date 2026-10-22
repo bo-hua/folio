@@ -362,6 +362,61 @@ def test_a_session_you_renamed_in_claude_code_shows_that_name(server, tmp_path, 
     assert sess["auto_title"] == "show my rename"
 
 
+def test_a_finished_turn_with_shells_still_running_is_working_not_needs_you(server, tmp_path, monkeypatch):
+    """"done 7:01 AM · 2 shells still running": the turn is over but the job is not.
+    Nothing is waiting on you until the shells end and the session reports back."""
+    from folio import transcript
+
+    call, cfg, repo = server["call"], server["config"], server["repo"]
+    sid = "2d3e4f50-6172-4839-8a0b-2d3e4f5a6b7c"
+    proj = tmp_path / "claude" / "projects" / "-some-checkout"
+    proj.mkdir(parents=True)
+    path = proj / f"{sid}.jsonl"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    for cache in (transcript._CACHE, transcript._PATHS, transcript._TASKS):
+        cache.clear()
+
+    def launched(task_id, at):
+        return json.dumps({"type": "user", "timestamp": at, "sessionId": sid,
+                           "toolUseResult": {"stdout": "", "backgroundTaskId": task_id}}) + "\n"
+
+    def notified(task_id):
+        return json.dumps({"type": "queue-operation", "operation": "enqueue", "sessionId": sid,
+                           "content": f"<task-notification>\n<task-id>{task_id}</task-id>\n"
+                                      "<status>completed</status>\n</task-notification>"}) + "\n"
+
+    store = RuntimeStore(cfg.runtime_dir)
+    t0 = datetime.now(timezone.utc) - timedelta(minutes=5)
+    store.record_event({"session_id": sid, "hook_event_name": "SessionStart", "cwd": str(repo["repo"])}, now=t0)
+    path.write_text(
+        launched("stale1", (t0 - timedelta(hours=1)).isoformat())  # from a process before this one
+        + launched("bvpwgrn36", (t0 + timedelta(minutes=1)).isoformat())
+        + launched("bv80z3rnz", (t0 + timedelta(minutes=1)).isoformat()),
+        encoding="utf-8")
+    store.record_event({"session_id": sid, "hook_event_name": "Stop", "cwd": str(repo["repo"])},
+                       now=t0 + timedelta(minutes=2))
+
+    assert call("POST", "/api/areas", {"name": "Digest"})[0] == 200
+    item = call("POST", "/api/items", {"name": "Send policy", "area": "Digest"})[1]
+    assert call("POST", f"/api/items/{item['id']}/sessions", {"session_id": sid})[0] == 200
+
+    def look():
+        ov = call("GET", "/api/overview")[1]
+        sess = next(s for s in ov["sessions"] if s["id"] == sid)
+        card = next(i for i in ov["items"] if i["id"] == item["id"])
+        return sess["state"], sess["attention"], card["attention"]["level"]
+
+    assert look() == ("working", None, "working")
+
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(notified("bvpwgrn36"))
+    assert look() == ("working", None, "working")  # one shell still going
+
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(notified("bv80z3rnz"))
+    assert look() == ("needs_you", "review", "needs_you")  # all done: now the result is yours to read
+
+
 def test_note_editor_is_served_and_wired_into_the_page(server):
     """Notes are edited as formatted text and stored as Markdown: the editor is a
     real asset the shell loads, and the notes section is built from it rather than
