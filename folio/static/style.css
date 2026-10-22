@@ -175,7 +175,8 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .area-col{display:flex;flex-direction:column;gap:56px;align-items:flex-start}
 .area{position:relative;border:1px solid var(--area-line);background:var(--area-tint);border-radius:18px;transition:box-shadow .2s,border-color .2s}
 .area.droptarget{box-shadow:0 0 0 3px var(--accent-glow);border-color:var(--accent)}
-.area-head{position:absolute;left:0;top:0;right:0;display:flex;align-items:baseline;gap:14px;padding:16px 22px 0 24px;cursor:grab}
+/* the head is in flow, so a one-column Area is at least as wide as its name and counts, never wrapping them */
+.area-head{display:flex;align-items:baseline;gap:14px;padding:16px 22px 0 24px;cursor:grab;white-space:nowrap}
 .area-title{margin:0;font-family:var(--serif);font-style:italic;font-weight:400;font-size:22px;letter-spacing:-.005em;color:var(--ink)}
 .area-meta{font-size:12px;color:var(--muted);display:flex;gap:10px;align-items:center}
 .area-meta .a{color:var(--attn-ink);font-weight:600;display:inline-flex;align-items:center;gap:5px}
@@ -183,8 +184,8 @@ button:focus-visible,[tabindex]:focus-visible,input:focus-visible,textarea:focus
 .area-meta .z{color:var(--muted);display:inline-flex;align-items:center;gap:5px}
 .area-add{margin-left:auto;width:26px;height:26px;border-radius:7px;border:1px dashed var(--line-2);color:var(--muted);display:grid;place-items:center;font-size:16px;line-height:1;transition:all .15s}
 .area-add:hover{border-style:solid;color:var(--ink);background:var(--surface)}
-.cols{display:flex;gap:22px;padding:66px 28px 30px;align-items:flex-start;min-height:130px}
-.col{width:320px;display:flex;flex-direction:column;gap:16px;min-height:24px}
+.cols{display:flex;gap:22px;padding:21px 28px 30px;align-items:flex-start;min-height:85px}
+.col{width:var(--col-w,320px);display:flex;flex-direction:column;gap:16px;min-height:24px}
 .col .empty{color:var(--faint);font-size:12px;padding:8px 2px}
 
 /* ---------- cards (nested) ---------- */

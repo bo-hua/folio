@@ -101,8 +101,51 @@ def test_equal_areas_form_a_balanced_grid(tmp_path):
 
 @node
 def test_a_tall_area_avoids_the_tall_column(tmp_path):
-    """Short Areas gather under one another rather than each starting a new tier under a tall one."""
-    assert once(tmp_path, {"A": 1000, "B": 300, "C": 300, "D": 900}) == [["A"], ["B", "C", "D"]]
+    """Short Areas gather under one another rather than each starting a new tier under a tall one.
+
+    In order, D lands under B and C (1612px); taken tallest first, D gets the column B shares and C
+    goes under A (1356px), so that wins."""
+    assert once(tmp_path, {"A": 1000, "B": 300, "C": 300, "D": 900}) == [["A", "C"], ["B", "D"]]
+
+
+@node
+def test_a_tall_area_late_in_the_list_gets_a_column_of_its_own(tmp_path):
+    """The user's board: PHUV, third of four, went under MISC and left Stale activation beside a blank.
+
+    Taken tallest first it gets the right-hand column to itself, and the canvas is ~530px shorter."""
+    assert once(tmp_path, {"MISC": 475, "Manage": 500, "PHUV": 1740, "Stale activation": 240}) == [["MISC", "Manage", "Stale activation"], ["PHUV"]]
+
+
+@node
+def test_a_small_saving_keeps_your_order(tmp_path):
+    """Tallest-first would save 50px here by swapping Manage and Paper notes; not worth reordering."""
+    assert once(tmp_path, {"Folio": 1000, "Gen rank paper": 1050, "Manage": 200, "Paper notes": 300}) == [["Folio", "Manage"], ["Gen rank paper", "Paper notes"]]
+
+
+def deal(tmp_path, *renders, cols=2, gap=16):
+    """Deal cards into an Area's columns once per render; each render is {card: height in px}."""
+    body = (
+        f"const RENDERS = {json.dumps(renders)};\n"
+        "const out = RENDERS.map(hs => { const cards = Object.keys(hs).map(n => ({ id: n })), heightOf = c => hs[c.id];\n"
+        f"  return sticky('area:x', cards, packColumns(cards, heightOf, {cols}, {gap}), heightOf, {gap}, CARD_SLACK).map(col => col.map(c => c.id)); }});\n"
+        "console.log(JSON.stringify(out));\n"
+    )
+    return run(tmp_path, body)
+
+
+@node
+def test_a_card_goes_under_the_shorter_column(tmp_path):
+    """PM went under Digest (round-robin, third card -> first column) and hung below a 1000px card."""
+    assert deal(tmp_path, {"Digest": 1060, "Feed": 470, "PM": 90})[0] == [["Digest"], ["Feed", "PM"]]
+    # equal cards still fill left to right
+    assert deal(tmp_path, dict.fromkeys("abcd", 100))[0] == [["a", "c"], ["b", "d"]]
+
+
+@node
+def test_a_card_growing_does_not_shuffle_its_neighbours(tmp_path):
+    first, second = deal(tmp_path, {"Digest": 500, "Feed": 520, "PM": 90}, {"Digest": 560, "Feed": 520, "PM": 90})
+    assert first == [["Digest", "PM"], ["Feed"]]
+    assert second == first, "Digest grew 60px and PM jumped columns"
 
 
 @node
@@ -152,6 +195,15 @@ def test_world_width_is_not_a_fixed_pixel_budget():
     assert "1980px" not in world
     assert "flex-wrap" not in world
     assert "flex-direction:column" not in world, "the world is a row of columns now"
+
+
+def test_area_head_sizes_the_area_and_columns_widen_for_nesting():
+    """An absolute head never widened its Area, so a one-column Area wrapped its own name and counts."""
+    css = STYLE.read_text(encoding="utf-8")
+    head = css.split(".area-head{", 1)[1].split("}", 1)[0]
+    assert "position:absolute" not in head and "white-space:nowrap" in head
+    assert "width:var(--col-w" in css.split(".col{", 1)[1].split("}", 1)[0]
+    assert "--col-w:" in APP_JS.read_text(encoding="utf-8")
 
 
 def test_area_columns_are_styled_and_rows_are_gone():

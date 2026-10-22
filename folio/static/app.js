@@ -340,7 +340,6 @@ function lifecycleWhy(c) {
   return 'nothing attached yet';
 }
 const colsFor = n => n <= 1 ? 1 : n <= 4 ? 2 : 3;
-const columnOf = (i, cols) => i % cols; // stable: a card keeps its column when neighbours grow
 
 // ------------------------------------------------------------------ geometry (read from the DOM)
 const stage = $('#stage'), world = $('#world');
@@ -413,14 +412,19 @@ function areaEl(a) {
   if (aa.needs) meta.appendChild(h('span', { class: 'a' }, h('i', { class: 'dot needs_you' }), `${aa.needs} need${aa.needs === 1 ? 's' : ''} you`));
   if (aa.working) meta.appendChild(h('span', { class: 'w' }, h('i', { class: 'dot working' }), `${aa.working} working`));
   if (aa.snoozed) meta.appendChild(h('span', { class: 'z', title: `Still needs you, snoozed on purpose — the cards go quiet until the time is up.` }, h('i', { class: 'dot needs_you snoozed' }), `${aa.snoozed} snoozed`));
+  // every card goes into the first column for now: render() measures them there, at the width they
+  // will have, and then deals them out by height (packCards)
   const colEls = Array.from({ length: cols }, () => h('div', { class: 'col' }));
-  cards.forEach((c, i) => colEls[columnOf(i, cols)].appendChild(cardEl(c, 0)));
+  cards.forEach(c => colEls[0].appendChild(cardEl(c, 0)));
   const hiddenTop = topOf(a).length - cards.length;
   if (!cards.length) colEls[0].appendChild(h('div', { class: 'empty' },
     hiddenTop ? `${hiddenTop} card${hiddenTop === 1 ? '' : 's'} here, all hidden by the filter.`
       : a.count ? 'Every card here is nested under a parent in another Area.'
         : 'No cards yet — press + or drop a session here'));
-  return h('section', { class: 'area', 'data-area': a.id },
+  // Each level of nesting spends ~44px on its rail and padding, so at a fixed width a card three
+  // levels down had a title column a word wide. An Area whose cards nest deep gets wider columns.
+  const depth = Math.max(0, ...Array.from(colEls[0].querySelectorAll('.card'), el => +el.dataset.depth));
+  return h('section', { class: 'area', 'data-area': a.id, style: `--col-w:${320 + 44 * Math.max(0, depth - 1)}px` },
     h('header', { class: 'area-head' }, h('h2', { class: 'area-title' }, a.name), meta,
       h('button', { class: `area-menu${popKey === `area:${a.id}` ? ' open' : ''}`, 'data-act': 'area-menu', 'aria-haspopup': 'menu', title: `More for ${a.name}` }, '\u22EF'),
       h('button', { class: 'area-add', 'data-act': 'add-to-area', title: `New idea in ${a.name}` }, '+')),
@@ -429,33 +433,58 @@ function areaEl(a) {
 // ------------------------------------------------------------------ area layout
 // Areas stack in columns, ceil(sqrt(n)) of them. That is a count, not a pixel budget: an Area that
 // grows a third column widens its own column, and nothing a card does changes how many columns there
-// are. Which column an Area lands in is decided by height. Each Area, in order, goes under the
-// shortest column so far, so a one-card Area sits right under a short neighbour instead of a screen
-// below the tallest one (rows were as tall as their tallest member, and the small Area alone in the
-// second row sat under all that blank space). Heights are read from the DOM, so the packing is
-// remembered between renders and redone only when a fresh one would cut the canvas height by more
-// than LAYOUT_SLACK -- a card created, folded or hidden nudges heights every few seconds, and that
-// must not shuffle Areas around.
+// are. Which column an Area lands in is decided by height: each Area goes under the shortest column
+// so far, so a one-card Area sits right under a short neighbour instead of a screen below the
+// tallest one. Taken in your order, one tall Area late in the list still lands under a column that
+// is already full and leaves a hole beside it, so the tallest-first packing is tried as well and wins
+// when it saves real height (LAYOUT_SLACK); either way each column then reads top to bottom in your order.
+// The cards inside an Area are dealt into its columns the same way (a short card goes under the
+// short column, not under the tall card two places before it), in your order.
+// Heights are read from the DOM, so a packing is remembered between renders and redone only when a
+// fresh one would cut the height by more than the slack -- a card created, folded or hidden nudges
+// heights every few seconds, and that must not shuffle things around.
 const areaColumns = n => Math.ceil(Math.sqrt(n));
 const LAYOUT_SLACK = 240;   // px of canvas height a fresh packing must save before Areas move
-function packAreas(areas, heightOf, cols, gap) {   // -> one list per column, top to bottom
+const CARD_SLACK = 120;     // ...and of Area height before cards move between its columns
+function packColumns(items, heightOf, cols, gap) {   // -> one list per column, top to bottom
   const out = Array.from({ length: cols }, () => []), tall = new Array(cols).fill(0);
-  for (const a of areas) {
+  for (const a of items) {
     let k = 0; for (let i = 1; i < cols; i++) if (tall[i] < tall[k]) k = i;   // shortest; ties go left
     tall[k] += (out[k].length ? gap : 0) + heightOf(a); out[k].push(a);
   }
   return out;
 }
-const canvasHeight = (packed, heightOf, gap) => Math.max(0, ...packed.map(col => col.reduce((s, a, i) => s + (i ? gap : 0) + heightOf(a), 0)));
-let LAYOUT = null;   // the packing on screen: { key: ordered Area ids, cols: [[id, ...], ...] }
-function layoutAreas(areas, heightOf, gap) {
-  const key = areas.map(a => a.id).join('\n'), fresh = packAreas(areas, heightOf, areaColumns(areas.length), gap);
-  if (LAYOUT && LAYOUT.key === key) {
-    const kept = LAYOUT.cols.map(ids => ids.map(id => areas.find(a => a.id === id)));
-    if (canvasHeight(kept, heightOf, gap) <= canvasHeight(fresh, heightOf, gap) + LAYOUT_SLACK) return kept;
+const packHeight = (packed, heightOf, gap) => Math.max(0, ...packed.map(col => col.reduce((s, a, i) => s + (i ? gap : 0) + heightOf(a), 0)));
+// in-order or tallest-first, whichever is shorter; columns and their contents put back in your order
+function packAreas(areas, heightOf, cols, gap) {
+  const at = new Map(areas.map((a, i) => [a, i]));
+  const inOrder = packColumns(areas, heightOf, cols, gap);
+  const tallFirst = packColumns([...areas].sort((x, y) => heightOf(y) - heightOf(x) || at.get(x) - at.get(y)), heightOf, cols, gap);
+  const best = packHeight(tallFirst, heightOf, gap) + LAYOUT_SLACK <= packHeight(inOrder, heightOf, gap) ? tallFirst : inOrder;
+  const first = col => col.length ? at.get(col[0]) : Infinity;
+  return best.map(col => col.sort((x, y) => at.get(x) - at.get(y))).sort((p, q) => first(p) - first(q));
+}
+const PACKED = new Map();   // what is on screen, per thing packed: { key: ordered ids, cols: [[id, ...], ...] }
+function sticky(name, items, fresh, heightOf, gap, slack) {
+  const key = items.map(a => a.id).join('\n'), was = PACKED.get(name);
+  if (was && was.key === key) {
+    const kept = was.cols.map(ids => ids.map(id => items.find(a => a.id === id)));
+    if (packHeight(kept, heightOf, gap) <= packHeight(fresh, heightOf, gap) + slack) return kept;
   }
-  LAYOUT = { key, cols: fresh.map(col => col.map(a => a.id)) };
+  PACKED.set(name, { key, cols: fresh.map(col => col.map(a => a.id)) });
   return fresh;
+}
+function layoutAreas(areas, heightOf, gap) {
+  return sticky('areas', areas, packAreas(areas, heightOf, areaColumns(areas.length), gap), heightOf, gap, LAYOUT_SLACK);
+}
+// deal an Area's cards, built into its first column, out into all of them
+function packCards(a, sec) {
+  const colEls = [...sec.querySelectorAll(':scope > .cols > .col')];
+  if (colEls.length < 2) return;
+  const cards = [...colEls[0].children].map(el => ({ id: el.dataset.id, el })), tall = new Map(cards.map(c => [c.id, c.el.offsetHeight]));
+  const heightOf = c => tall.get(c.id), gap = parseFloat(getComputedStyle(colEls[0]).rowGap) || 0;
+  const cols = sticky(`area:${a.id}`, cards, packColumns(cards, heightOf, colEls.length, gap), heightOf, gap, CARD_SLACK);
+  cols.forEach((col, i) => colEls[i].append(...col.map(c => c.el)));
 }
 function render() {
   computeVisible();
@@ -463,6 +492,7 @@ function render() {
   // build every Area first and measure it, then move each into the column the packing picks
   const els = new Map(AREAS.map(a => [a.id, areaEl(a)]));
   world.appendChild(h('div', { class: 'area-col' }, ...els.values()));
+  AREAS.forEach(a => packCards(a, els.get(a.id)));
   const gap = parseFloat(getComputedStyle(world).columnGap) || 0;
   const cols = layoutAreas(AREAS, a => els.get(a.id).offsetHeight, gap);
   world.innerHTML = '';
