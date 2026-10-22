@@ -431,21 +431,28 @@ function areaEl(a) {
     h('div', { class: 'cols' }, ...colEls));
 }
 // ------------------------------------------------------------------ area layout
-// Areas stack in columns, ceil(sqrt(n)) of them. That is a count, not a pixel budget: an Area that
-// grows a third column widens its own column, and nothing a card does changes how many columns there
-// are. Which column an Area lands in is decided by height: each Area goes under the shortest column
-// so far, so a one-card Area sits right under a short neighbour instead of a screen below the
-// tallest one. Taken in your order, one tall Area late in the list still lands under a column that
-// is already full and leaves a hole beside it, so the tallest-first packing is tried as well and wins
-// when it saves real height (LAYOUT_SLACK); either way each column then reads top to bottom in your order.
+// Areas stack in columns. Within a column count, which column an Area lands in is decided by height:
+// each Area goes under the shortest column so far, so a one-card Area sits right under a short
+// neighbour instead of a screen below the tallest one. Taken in your order, one tall Area late in the
+// list still lands under a column that is already full and leaves a hole beside it, so the
+// tallest-first packing is tried as well; either way each column then reads top to bottom in your order.
+// How many columns is not a fixed count. ceil(sqrt(n)) put five Areas in three columns -- Folio, one
+// very wide Gen rank paper, and a column of three small Areas -- a long strip of mostly blank canvas,
+// where two columns with the small Areas tucked under Folio is far tighter. So every count is tried
+// and the canvas that wastes least wins: its bounding box, scaled up gently (fourth root) the further
+// its shape is from the window's -- scaling by the full mismatch would be "largest when zoomed to
+// fit", and in a wide window that picks the strip again. Past SHAPE_FREE times off the window's shape
+// the penalty turns steep, so a short Area never stacks a screen below a 3000px one just because the
+// pair is then narrower.
 // The cards inside an Area are dealt into its columns the same way (a short card goes under the
 // short column, not under the tall card two places before it), in your order.
-// Heights are read from the DOM, so a packing is remembered between renders and redone only when a
-// fresh one would cut the height by more than the slack -- a card created, folded or hidden nudges
-// heights every few seconds, and that must not shuffle things around.
-const areaColumns = n => Math.ceil(Math.sqrt(n));
-const LAYOUT_SLACK = 240;   // px of canvas height a fresh packing must save before Areas move
-const CARD_SLACK = 120;     // ...and of Area height before cards move between its columns
+// Sizes are read from the DOM, so a packing is remembered between renders and redone only when a
+// fresh one is clearly better -- a card created, folded or hidden nudges sizes every few seconds,
+// and that must not shuffle things around.
+const LAYOUT_SLACK = 1.15;  // how much better a fresh Area layout must score before Areas move
+const ORDER_SLACK = 1.1;    // ...and tallest-first must beat your order by before it is used
+const SHAPE_FREE = 3;       // how far off the window's shape a canvas gets before that costs in earnest
+const CARD_SLACK = 120;     // px of Area height a fresh dealing must save before cards move between its columns
 function packColumns(items, heightOf, cols, gap) {   // -> one list per column, top to bottom
   const out = Array.from({ length: cols }, () => []), tall = new Array(cols).fill(0);
   for (const a of items) {
@@ -455,27 +462,41 @@ function packColumns(items, heightOf, cols, gap) {   // -> one list per column, 
   return out;
 }
 const packHeight = (packed, heightOf, gap) => Math.max(0, ...packed.map(col => col.reduce((s, a, i) => s + (i ? gap : 0) + heightOf(a), 0)));
-// in-order or tallest-first, whichever is shorter; columns and their contents put back in your order
-function packAreas(areas, heightOf, cols, gap) {
-  const at = new Map(areas.map((a, i) => [a, i]));
-  const inOrder = packColumns(areas, heightOf, cols, gap);
-  const tallFirst = packColumns([...areas].sort((x, y) => heightOf(y) - heightOf(x) || at.get(x) - at.get(y)), heightOf, cols, gap);
-  const best = packHeight(tallFirst, heightOf, gap) + LAYOUT_SLACK <= packHeight(inOrder, heightOf, gap) ? tallFirst : inOrder;
-  const first = col => col.length ? at.get(col[0]) : Infinity;
-  return best.map(col => col.sort((x, y) => at.get(x) - at.get(y))).sort((p, q) => first(p) - first(q));
+function layoutCost(packed, sizeOf, gap, view) {   // lower is better
+  const cols = packed.filter(col => col.length);
+  const w = cols.reduce((s, col, i) => s + (i ? gap : 0) + Math.max(...col.map(a => sizeOf(a).w)), 0), h = packHeight(cols, a => sizeOf(a).h, gap);
+  if (!w || !h) return 0;
+  const r = (w / h) / (view.w / view.h);
+  const off = Math.max(r, 1 / r);
+  return w * h * (off <= SHAPE_FREE ? off ** 0.25 : SHAPE_FREE ** 0.25 * off / SHAPE_FREE);
+}
+// the best column count and order; columns and their contents put back in your order
+function packAreas(areas, sizeOf, gap, view) {
+  const at = new Map(areas.map((a, i) => [a, i])), heightOf = a => sizeOf(a).h, cost = p => layoutCost(p, sizeOf, gap, view);
+  const tallOrder = [...areas].sort((x, y) => heightOf(y) - heightOf(x) || at.get(x) - at.get(y));
+  let best = [], bestCost = Infinity;
+  for (let cols = 1; cols <= areas.length; cols++) {   // ties go to fewer columns
+    const inOrder = packColumns(areas, heightOf, cols, gap), tallFirst = packColumns(tallOrder, heightOf, cols, gap);
+    const ci = cost(inOrder), ct = cost(tallFirst) * ORDER_SLACK;
+    const [p, c] = ct < ci ? [tallFirst, ct] : [inOrder, ci];
+    if (c < bestCost) { best = p; bestCost = c; }
+  }
+  const first = col => at.get(col[0]);
+  return best.filter(col => col.length).map(col => col.sort((x, y) => at.get(x) - at.get(y))).sort((p, q) => first(p) - first(q));
 }
 const PACKED = new Map();   // what is on screen, per thing packed: { key: ordered ids, cols: [[id, ...], ...] }
-function sticky(name, items, fresh, heightOf, gap, slack) {
+function sticky(name, items, fresh, keep) {   // keep(kept, fresh): is what is on screen still good enough?
   const key = items.map(a => a.id).join('\n'), was = PACKED.get(name);
   if (was && was.key === key) {
     const kept = was.cols.map(ids => ids.map(id => items.find(a => a.id === id)));
-    if (packHeight(kept, heightOf, gap) <= packHeight(fresh, heightOf, gap) + slack) return kept;
+    if (keep(kept, fresh)) return kept;
   }
   PACKED.set(name, { key, cols: fresh.map(col => col.map(a => a.id)) });
   return fresh;
 }
-function layoutAreas(areas, heightOf, gap) {
-  return sticky('areas', areas, packAreas(areas, heightOf, areaColumns(areas.length), gap), heightOf, gap, LAYOUT_SLACK);
+function layoutAreas(areas, sizeOf, gap, view) {   // sizeOf(area) -> { w, h }; view: the window, { w, h }
+  const cost = p => layoutCost(p, sizeOf, gap, view);
+  return sticky('areas', areas, packAreas(areas, sizeOf, gap, view), (kept, fresh) => cost(kept) <= cost(fresh) * LAYOUT_SLACK);
 }
 // deal an Area's cards, built into its first column, out into all of them
 function packCards(a, sec) {
@@ -483,7 +504,8 @@ function packCards(a, sec) {
   if (colEls.length < 2) return;
   const cards = [...colEls[0].children].map(el => ({ id: el.dataset.id, el })), tall = new Map(cards.map(c => [c.id, c.el.offsetHeight]));
   const heightOf = c => tall.get(c.id), gap = parseFloat(getComputedStyle(colEls[0]).rowGap) || 0;
-  const cols = sticky(`area:${a.id}`, cards, packColumns(cards, heightOf, colEls.length, gap), heightOf, gap, CARD_SLACK);
+  const cols = sticky(`area:${a.id}`, cards, packColumns(cards, heightOf, colEls.length, gap),
+    (kept, fresh) => packHeight(kept, heightOf, gap) <= packHeight(fresh, heightOf, gap) + CARD_SLACK);
   cols.forEach((col, i) => colEls[i].append(...col.map(c => c.el)));
 }
 function render() {
@@ -494,7 +516,8 @@ function render() {
   world.appendChild(h('div', { class: 'area-col' }, ...els.values()));
   AREAS.forEach(a => packCards(a, els.get(a.id)));
   const gap = parseFloat(getComputedStyle(world).columnGap) || 0;
-  const cols = layoutAreas(AREAS, a => els.get(a.id).offsetHeight, gap);
+  const view = { w: stage.clientWidth || 1600, h: stage.clientHeight || 1000 };
+  const cols = layoutAreas(AREAS, a => { const el = els.get(a.id); return { w: el.offsetWidth, h: el.offsetHeight }; }, gap, view);
   world.innerHTML = '';
   cols.forEach(col => world.appendChild(h('div', { class: 'area-col' }, ...col.map(a => els.get(a.id)))));
   world.appendChild(h('i', { class: 'insline', id: 'insline' }));

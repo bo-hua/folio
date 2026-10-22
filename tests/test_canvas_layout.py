@@ -4,13 +4,12 @@ Areas used to sit in rows of ceil(sqrt(n)), and a row is as tall as its tallest
 member: with two big Areas and a one-card one, the small Area sat alone a whole
 screen below, under the blank the shorter big Area left. Areas now stack in that
 many *columns*, and each Area goes under the shortest column so far, so the small
-one sits right under the shorter big one. The column count is still a count, so
-nothing a card does can change the canvas width; the packing within the columns
-is remembered and only redone when a fresh one would save real height. The rule
-is pulled out of `static/app.js` and run under node.
+one sits right under the shorter big one. How many columns is chosen by the
+canvas that wastes least for the window's shape (ceil(sqrt(n)) left a long blank
+strip beside a wide Area); the packing is remembered and only redone when a fresh
+one is clearly better. The rule is pulled out of `static/app.js` and run under node.
 """
 import json
-import math
 import shutil
 import subprocess
 from pathlib import Path
@@ -40,23 +39,25 @@ def run(tmp_path, body: str):
     return json.loads(out.stdout)
 
 
-def columns(tmp_path, *renders, gap=56):
-    """Lay the same canvas out once per render; each render is {area name: height in px}.
+def columns(tmp_path, *renders, gap=56, view=(1600, 1000)):
+    """Lay the same canvas out once per render; each render is {area name: height} or
+    {area name: [width, height]} in px (width defaults to one 376px column).
 
     Returns the columns of each render, as lists of Area names top to bottom. Insertion
     order of the dict is the Area order, as the server sends it (alphabetical).
     """
+    sized = [{n: s if isinstance(s, list) else [376, s] for n, s in r.items()} for r in renders]
     body = (
-        f"const RENDERS = {json.dumps(renders)};\n"
-        "const out = RENDERS.map(hs => layoutAreas(Object.keys(hs).map(n => ({ id: n })), a => hs[a.id], "
-        f"{gap}).map(col => col.map(a => a.id)));\n"
+        f"const RENDERS = {json.dumps(sized)};\n"
+        "const out = RENDERS.map(ss => layoutAreas(Object.keys(ss).map(n => ({ id: n })), a => ({ w: ss[a.id][0], h: ss[a.id][1] }), "
+        f"{gap}, {{ w: {view[0]}, h: {view[1]} }}).map(col => col.map(a => a.id)));\n"
         "console.log(JSON.stringify(out));\n"
     )
     return run(tmp_path, body)
 
 
-def once(tmp_path, heights, gap=56):
-    return columns(tmp_path, heights, gap=gap)[0]
+def once(tmp_path, sizes, gap=56, view=(1600, 1000)):
+    return columns(tmp_path, sizes, gap=gap, view=view)[0]
 
 
 @node
@@ -85,10 +86,19 @@ def test_no_areas_is_no_columns(tmp_path):
 
 
 @node
-def test_column_count_is_a_count_not_a_pixel_budget(tmp_path):
-    """ceil(sqrt(n)) columns: squarish, and a card can never change it."""
-    got = run(tmp_path, "console.log(JSON.stringify([...Array(13).keys()].map(areaColumns)));\n")
-    assert got == [math.ceil(math.sqrt(n)) for n in range(13)]
+def test_small_areas_tuck_under_a_narrow_one_beside_a_wide_one(tmp_path):
+    """The user's board: three columns -- Folio, a very wide Gen rank paper, and MISC, Manage and
+    Reading in a column of their own -- made a long mostly-blank strip. Two are far tighter."""
+    sizes = {"Folio": [570, 535], "Gen rank paper": [955, 985], "MISC": [570, 135], "Manage": [570, 165], "Reading": [285, 140]}
+    assert once(tmp_path, sizes) == [["Folio", "MISC", "Manage", "Reading"], ["Gen rank paper"]]
+    # even in a very wide window
+    assert once(tmp_path, sizes, view=(2260, 1115)) == [["Folio", "MISC", "Manage", "Reading"], ["Gen rank paper"]]
+
+
+@node
+def test_many_small_areas_do_not_make_one_tall_strip(tmp_path):
+    cols = once(tmp_path, dict.fromkeys("abcdefghijkl", 300))
+    assert 3 <= len(cols) <= 5, cols
 
 
 @node
@@ -101,11 +111,9 @@ def test_equal_areas_form_a_balanced_grid(tmp_path):
 
 @node
 def test_a_tall_area_avoids_the_tall_column(tmp_path):
-    """Short Areas gather under one another rather than each starting a new tier under a tall one.
-
-    In order, D lands under B and C (1612px); taken tallest first, D gets the column B shares and C
-    goes under A (1356px), so that wins."""
-    assert once(tmp_path, {"A": 1000, "B": 300, "C": 300, "D": 900}) == [["A", "C"], ["B", "D"]]
+    """Short Areas gather under one another rather than each starting a new tier under a tall one:
+    in two columns D landed under B and C (1612px); three columns keep everything within A's 1000px."""
+    assert once(tmp_path, {"A": 1000, "B": 300, "C": 300, "D": 900}) == [["A"], ["B", "C"], ["D"]]
 
 
 @node
@@ -117,9 +125,16 @@ def test_a_tall_area_late_in_the_list_gets_a_column_of_its_own(tmp_path):
 
 
 @node
-def test_a_small_saving_keeps_your_order(tmp_path):
-    """Tallest-first would save 50px here by swapping Manage and Paper notes; not worth reordering."""
-    assert once(tmp_path, {"Folio": 1000, "Gen rank paper": 1050, "Manage": 200, "Paper notes": 300}) == [["Folio", "Manage"], ["Gen rank paper", "Paper notes"]]
+def test_two_short_areas_share_a_column_beside_two_tall_ones(tmp_path):
+    """Three narrow columns (1240 x 1050) beat two (808 x 1406, a tall strip in a wide window)."""
+    assert once(tmp_path, {"Folio": 1000, "Gen rank paper": 1050, "Manage": 200, "Paper notes": 300}) == [["Folio"], ["Gen rank paper"], ["Manage", "Paper notes"]]
+
+
+@node
+def test_a_tall_strip_never_wins_by_being_narrow(tmp_path):
+    """Stacked, a 200px Area sat a screen below a 3000px one: the old complaint. Past SHAPE_FREE
+    off the window's shape the penalty is steep, so the pair stays side by side."""
+    assert once(tmp_path, {"Folio": 3000, "Gen rank paper": 200}, view=(2400, 1000)) == [["Folio"], ["Gen rank paper"]]
 
 
 def deal(tmp_path, *renders, cols=2, gap=16):
@@ -127,7 +142,8 @@ def deal(tmp_path, *renders, cols=2, gap=16):
     body = (
         f"const RENDERS = {json.dumps(renders)};\n"
         "const out = RENDERS.map(hs => { const cards = Object.keys(hs).map(n => ({ id: n })), heightOf = c => hs[c.id];\n"
-        f"  return sticky('area:x', cards, packColumns(cards, heightOf, {cols}, {gap}), heightOf, {gap}, CARD_SLACK).map(col => col.map(c => c.id)); }});\n"
+        f"  return sticky('area:x', cards, packColumns(cards, heightOf, {cols}, {gap}),\n"
+        f"    (kept, fresh) => packHeight(kept, heightOf, {gap}) <= packHeight(fresh, heightOf, {gap}) + CARD_SLACK).map(col => col.map(c => c.id)); }});\n"
         "console.log(JSON.stringify(out));\n"
     )
     return run(tmp_path, body)
@@ -154,7 +170,6 @@ def test_every_area_appears_exactly_once_in_order(tmp_path):
         names = [f"a{i:02d}" for i in range(n)]
         heights = {name: 100 + (i * 397) % 900 for i, name in enumerate(names)}
         cols = once(tmp_path, heights)
-        assert len(cols) == math.ceil(math.sqrt(n))
         assert sorted(name for col in cols for name in col) == names, f"{n} areas came back duplicated or dropped"
         for col in cols:
             assert col == sorted(col), f"{n} areas: a column reads out of order"
@@ -170,9 +185,9 @@ def test_a_card_growing_does_not_shuffle_areas(tmp_path):
 
 @node
 def test_a_real_imbalance_repacks(tmp_path):
-    first, second = columns(tmp_path, {"Folio": 1000, "Gen rank paper": 1050, "Manage": 400}, {"Folio": 2000, "Gen rank paper": 1050, "Manage": 400})
+    first, second = columns(tmp_path, {"Folio": 1000, "Gen rank paper": 1050, "Manage": 200}, {"Folio": 2400, "Gen rank paper": 1050, "Manage": 200})
     assert first == [["Folio", "Manage"], ["Gen rank paper"]]
-    assert second == [["Folio"], ["Gen rank paper", "Manage"]]
+    assert second == [["Folio"], ["Gen rank paper"], ["Manage"]], "Manage stayed 2400px down under Folio"
 
 
 @node
@@ -184,7 +199,7 @@ def test_adding_or_removing_an_area_lays_out_afresh(tmp_path):
         {"Folio": 1000, "Gen rank paper": 1050},
     )
     assert first == [["Folio", "Manage"], ["Gen rank paper"]]
-    assert second == [["Folio", "Manage"], ["Gen rank paper", "Paper notes"]]
+    assert second == [["Folio"], ["Gen rank paper"], ["Manage", "Paper notes"]]
     assert third == [["Folio"], ["Gen rank paper"]]
 
 
