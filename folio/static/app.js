@@ -15,7 +15,9 @@ const LIVE_STATES = new Set(['needs_you', 'working', 'ready']); // same boundary
 const closedOut = c => lifecycle(c) === 'done' || lifecycle(c) === 'parked';
 const FOCUS_MODES = {
   all: { label: 'Showing everything' },
-  done: { label: 'Hiding done cards', keep: c => lifecycle(c) !== 'done' },
+  // prunes: a card the mode drops takes its subtree with it -- marking a parent done is enough
+  // to clear the branch, whatever its children still say.
+  done: { label: 'Hiding done cards', keep: c => lifecycle(c) !== 'done', prunes: true },
   live: { label: 'Only cards with a session', keep: c => { const ss = sessOf(c.id); return ss.some(s => LIVE_STATES.has(s.state)) || (ss.length > 0 && !closedOut(c)); } },
 };
 const FOCUS_ORDER = ['all', 'done', 'live'];
@@ -98,19 +100,21 @@ const isVisible = c => !VISIBLE || VISIBLE.has(c.id);
 const visKidsOf = id => kidsOf(id).filter(isVisible);
 const visTopOf = a => topOf(a).filter(isVisible);
 function computeVisible() {
-  const keepOwn = (FOCUS_MODES[state.focus] || FOCUS_MODES.all).keep;
+  const { keep: keepOwn, prunes } = FOCUS_MODES[state.focus] || FOCUS_MODES.all;
   if (!keepOwn) { VISIBLE = null; return; }
   VISIBLE = new Set();
   // A card the mode would drop still shows when something inside it survives -- the parent
   // is the way in -- or when one of its own sessions needs you: the filter must never
-  // swallow a card that is asking for you.
-  const keep = c => {
-    const kidsKept = kidsOf(c.id).map(keep).includes(true); // map, not some: every child is visited
-    const v = kidsKept || keepOwn(c) || sessOf(c.id).some(needy);
+  // swallow a card that is asking for you. In a pruning mode, everything under a dropped
+  // card is dropped too, open or not; only a card asking for you (and its chain) survives.
+  const keep = (c, pruned) => {
+    pruned = pruned || (prunes && !keepOwn(c));
+    const kidsKept = kidsOf(c.id).map(k => keep(k, pruned)).includes(true); // map, not some: every child is visited
+    const v = kidsKept || (!pruned && keepOwn(c)) || sessOf(c.id).some(needy);
     if (v) VISIBLE.add(c.id);
     return v;
   };
-  CARDS.filter(c => !c.parent).forEach(keep);
+  CARDS.filter(c => !c.parent).forEach(c => keep(c, false));
   // whatever you have open stays on the canvas, filter or not, with its ancestors
   if (state.selected && cardById(state.selected)) { VISIBLE.add(state.selected); ancestors(state.selected).forEach(id => VISIBLE.add(id)); }
 }
@@ -141,8 +145,8 @@ const hiddenCount = () => VISIBLE ? CARDS.length - VISIBLE.size : 0;
 // folds its done children into one line -- "13 done" -- and stays the height of its open work.
 // The line opens on a click. Nothing is filtered: the fold is drawing, not visibility, and a
 // short list never folds (the line would be as tall as what it replaced).
-// A done card stays out of the fold for the same reasons Hide done keeps it on the canvas:
-// something inside it is still open, a session is live on it, or it is the card you have open.
+// A done card stays out of the fold while something inside it is still open, a session is live
+// on it, or it is the card you have open. (Hide done is blunter: a done card hides its subtree.)
 const FOLD_AT = 6; // a list longer than this folds
 function foldable(c) { return lifecycle(c) === 'done' && c.id !== state.selected && !sessOf(c.id).some(s => LIVE_STATES.has(s.state)) && kidsOf(c.id).every(foldable); }
 function foldKids(id, kids) { // -> { shown, folded }: the children to draw, and the done ones the line stands for

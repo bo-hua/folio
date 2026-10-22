@@ -60,8 +60,8 @@ def run(tmp_path, cards, focus, sessions=None, selected=None):
     return json.loads(out.stdout)
 
 
-# One Area: a live card with a finished child, a done card that still holds live
-# work, a wholly finished branch, and a parked card.
+# One Area: a live card with a finished child, a done card with live work still
+# inside it, a wholly finished branch, and a parked card.
 TREE = [
     {"id": "a", "parent": None, "area": "Work", "lifecycle": "active"},
     {"id": "a1", "parent": "a", "area": "Work", "lifecycle": "done"},
@@ -85,13 +85,25 @@ def test_all_shows_everything(tmp_path):
 # --------------------------------------------------------------------------- #
 
 @node
-def test_hide_done_keeps_a_finished_card_that_still_holds_live_work(tmp_path):
+def test_hide_done_hides_a_done_card_and_everything_inside_it(tmp_path):
     got = run(tmp_path, TREE, "done")
-    # a1 and c1 are done leaves -> gone; c is done with nothing alive inside -> gone.
-    # b is done but b1 is active, so b stays as the way in to b1. d is parked -> still shown.
-    assert got["visible"] == ["a", "a2", "b", "b1", "d"]
-    assert got["hidden"] == 3
+    # a1 is a done leaf -> gone. b is done, so b1 goes with it although b1 is still
+    # active: marking the parent done is enough. c and c1 likewise. d is parked -> shown.
+    assert got["visible"] == ["a", "a2", "d"]
+    assert got["hidden"] == 5
     assert dict(got["topKids"])["a"] == ["a2"]  # the done child drops out of the drawn tree
+
+
+@node
+def test_open_children_under_a_done_parent_do_not_hold_it_up(tmp_path):
+    tree = [
+        {"id": "p", "parent": None, "area": "Work", "lifecycle": "done"},
+        {"id": "q", "parent": "p", "area": "Work", "lifecycle": "idea"},
+        {"id": "r", "parent": "q", "area": "Work", "lifecycle": "active"},
+        {"id": "s", "parent": "q", "area": "Work", "lifecycle": "parked"},
+    ]
+    got = run(tmp_path, tree, "done", sessions=[{"id": "s1", "item": "r", "state": "working"}])
+    assert got["visible"] == [] and got["hidden"] == 4
 
 
 @node
@@ -115,15 +127,16 @@ def test_a_snoozed_card_is_no_longer_the_one_the_filter_must_keep(tmp_path):
 
 
 @node
-def test_a_deep_survivor_pulls_its_whole_chain_through(tmp_path):
+def test_a_deep_card_asking_for_you_pulls_its_whole_chain_through(tmp_path):
     deep = [
         {"id": "p", "parent": None, "area": "Work", "lifecycle": "done"},
-        {"id": "q", "parent": "p", "area": "Work", "lifecycle": "done"},
-        {"id": "r", "parent": "q", "area": "Work", "lifecycle": "done"},
+        {"id": "q", "parent": "p", "area": "Work", "lifecycle": "active"},
+        {"id": "r", "parent": "q", "area": "Work", "lifecycle": "idea"},
         {"id": "s", "parent": "r", "area": "Work", "lifecycle": "active"},
-        {"id": "t", "parent": "r", "area": "Work", "lifecycle": "done"},
+        {"id": "t", "parent": "r", "area": "Work", "lifecycle": "active"},
     ]
-    got = run(tmp_path, deep, "done")
+    # the done root hides everything under it -- except s, which needs you, and the chain to it
+    got = run(tmp_path, deep, "done", sessions=[{"id": "s1", "item": "s", "state": "needs_you"}])
     assert got["visible"] == ["p", "q", "r", "s"] and got["hidden"] == 1
 
 
@@ -209,9 +222,9 @@ def test_the_rail_shows_every_session_when_nothing_is_filtered(tmp_path):
 @node
 def test_hide_done_drops_the_rows_whose_cards_left_the_canvas(tmp_path):
     got = run(tmp_path, TREE, "done", sessions=RAIL)
-    # a1 and c are hidden by "hide done", so their sessions go with them. b1 is alive
-    # and the unattached row has no card to follow -- both stay.
-    assert got["rail"] == ["s-b1", "s-free"]
+    # a1 and c are hidden by "hide done", so their sessions go with them -- and so is b1,
+    # inside the done card b, working or not. The unattached row has no card to follow.
+    assert got["rail"] == ["s-free"]
 
 
 @node
@@ -245,10 +258,10 @@ def test_the_open_card_keeps_its_rows_in_the_rail(tmp_path):
 
 @node
 def test_a_row_on_several_cards_stays_while_any_of_them_shows(tmp_path):
-    # a1 and c are hidden by "hide done"; b1 stays. A session on a1 *and* b1 still has a
+    # a1 and c are hidden by "hide done"; a2 stays. A session on a1 *and* a2 still has a
     # card on the canvas, so its row stays; one on a1 and c has nowhere left to point.
     got = run(tmp_path, TREE, "done", sessions=[
-        {"id": "s-split", "items": ["a1", "b1"], "state": "ended"},
+        {"id": "s-split", "items": ["a1", "a2"], "state": "ended"},
         {"id": "s-gone", "items": ["a1", "c"], "state": "ended"},
     ])
     assert got["rail"] == ["s-split"]
