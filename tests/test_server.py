@@ -334,6 +334,34 @@ def test_sessions_carry_the_title_claude_code_gave_them(server, tmp_path, monkey
     assert files and all("long-term ranking objective" not in p.read_text() for p in files)
 
 
+def test_a_session_you_renamed_in_claude_code_shows_that_name(server, tmp_path, monkeypatch):
+    """Renaming a session writes custom-title; Claude Code keeps writing its own
+    ai-title afterwards. The rail must show your name, as the agent view does."""
+    from folio import transcript
+
+    call, cfg, repo = server["call"], server["config"], server["repo"]
+    sid = "1c2d3e4f-5061-4728-9a0b-1c2d3e4f5a6b"
+    proj = tmp_path / "claude" / "projects" / "-some-checkout"
+    proj.mkdir(parents=True)
+    (proj / f"{sid}.jsonl").write_text(
+        json.dumps({"aiTitle": "session title mismatch", "sessionId": sid, "type": "ai-title"}) + "\n"
+        + json.dumps({"customTitle": "show my rename", "sessionId": sid, "type": "custom-title"}) + "\n"
+        + json.dumps({"agentName": "show my rename", "sessionId": sid, "type": "agent-name"}) + "\n"
+        + json.dumps({"aiTitle": "session title mismatch", "sessionId": sid, "type": "ai-title"}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    transcript._CACHE.clear()
+    transcript._PATHS.clear()
+
+    now = datetime(2026, 10, 21, 17, 0, tzinfo=timezone.utc)
+    RuntimeStore(cfg.runtime_dir).record_event(
+        {"session_id": sid, "hook_event_name": "Stop", "cwd": str(repo["repo"])}, now=now)
+
+    sess = next(s for s in call("GET", "/api/overview")[1]["sessions"] if s["id"] == sid)
+    assert sess["auto_title"] == "show my rename"
+
+
 def test_note_editor_is_served_and_wired_into_the_page(server):
     """Notes are edited as formatted text and stored as Markdown: the editor is a
     real asset the shell loads, and the notes section is built from it rather than
